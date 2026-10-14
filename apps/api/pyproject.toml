@@ -1,0 +1,42 @@
+[project]
+name = "wsw-brain"
+version = "0.1.0"
+description = "Hack October - Who Said What Brain: live diarized meetings into a FalkorDB graph, voice-first Q&A with Gemma 4"
+license = "Apache-2.0"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "httpx>=0.27",
+    "numpy>=1.26",
+    "soundfile>=0.12",
+    "soxr>=0.4",
+    "FalkorDB>=1.8.0",
+    "onnxruntime>=1.19",
+    "tokenizers>=0.20",
+    "huggingface-hub>=0.25",
+    "sherpa-onnx>=1.12",
+    "faster-whisper>=1.0.3",
+    "google-genai>=1.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["wsw_brain"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
