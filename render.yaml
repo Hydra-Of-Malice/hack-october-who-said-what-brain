@@ -1,0 +1,39 @@
+# Render Blueprint: New > Blueprint > pick this repo. Set GEMINI_API_KEY when prompted.
+# The app needs ~1.5 GB RAM (faster-whisper small + EmbeddingGemma), so use the Standard plan.
+services:
+  - type: pserv
+    name: wsw-falkordb
+    runtime: image
+    image:
+      url: docker.io/falkordb/falkordb:v4.22.0
+    plan: starter
+    disk:
+      name: falkordb-data
+      mountPath: /var/lib/falkordb/data
+      sizeGB: 1
+    envVars:
+      - key: BROWSER
+        value: "0"
+      - key: REDIS_ARGS
+        value: "--appendonly yes --appendfsync everysec"
+      - key: FALKORDB_ARGS
+        value: "TIMEOUT_DEFAULT 5000 TIMEOUT_MAX 20000 MAX_QUEUED_QUERIES 500 RESULTSET_SIZE 10000"
+
+  - type: web
+    name: wsw-brain
+    runtime: docker
+    plan: standard
+    healthCheckPath: /api/health
+    envVars:
+      - key: WSW_FALKORDB_URL
+        value: falkor://wsw-falkordb:6379
+      - key: WSW_LLM_PROVIDER
+        value: gemini
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: WSW_GEMINI_MODEL
+        value: gemma-4-31b-it
+      - key: WSW_QUESTION_AUDIO
+        value: whisper
+      - key: WSW_SEED_DEMO
+        value: "true"

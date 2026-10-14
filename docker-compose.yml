@@ -1,0 +1,30 @@
+# docker compose up --build   ->  http://localhost:8000
+# Gemma 4: set GEMINI_API_KEY in .env, or point WSW_OLLAMA_URL at an Ollama host with gemma4:e4b.
+services:
+  falkordb:
+    # C engine; see docs/TECH_NOTES.md §2.1 for why we pin rather than use :latest
+    image: falkordb/falkordb:v4.22.0
+    ports: ["6379:6379", "3000:3000"] # 3000 = FalkorDB Browser
+    environment:
+      REDIS_ARGS: "--appendonly yes --appendfsync everysec"
+      FALKORDB_ARGS: "TIMEOUT_DEFAULT 5000 TIMEOUT_MAX 20000 MAX_QUEUED_QUERIES 500 RESULTSET_SIZE 10000"
+    volumes: ["falkordb_data:/var/lib/falkordb/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 20
+
+  app:
+    build: .
+    ports: ["8000:8000"]
+    env_file: [{ path: .env, required: false }]
+    environment:
+      WSW_FALKORDB_URL: falkor://falkordb:6379
+      WSW_OLLAMA_URL: ${WSW_OLLAMA_URL:-http://host.docker.internal:11434}
+    volumes: ["app_data:/data"]
+    depends_on:
+      falkordb: { condition: service_healthy }
+
+volumes:
+  falkordb_data:
+  app_data:
