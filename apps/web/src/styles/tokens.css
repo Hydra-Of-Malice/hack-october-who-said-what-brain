@@ -1,0 +1,85 @@
+/* Design tokens. Components read ONLY these variables (see docs/DESIGN.md). */
+@import "@fontsource-variable/recursive/full.css";
+@import "@fontsource/newsreader/400.css";
+@import "@fontsource/newsreader/400-italic.css";
+@import "@fontsource/newsreader/600.css";
+
+:root {
+  /* colour */
+  --bg: #e3e6e8;
+  --surface: #f7f8f9;
+  --surface-2: #eef0f2;
+  --surface-sunk: #d9dde0;
+  --ink: #13202b;
+  --ink-2: #46535f;
+  --ink-3: #66727d; /* placeholders, disabled — AA only at >=18px */
+  --line: #c3cad0;
+  --line-strong: #9aa4ad;
+  --rec: #c8261b;
+  --rec-soft: #f6dcd9;
+  --focus: #2350c8;
+  --ok: #1d6e46;
+  --ok-soft: #dcefe4;
+  --warn: #8a5a00;
+  --warn-soft: #f5e8c8;
+  --on-ink: #ffffff;
+
+  /* speakers (white text passes AA on all) */
+  --spk-0: #2f5bd3;
+  --spk-1: #0e8577;
+  --spk-2: #b98900;
+  --spk-3: #a23b84;
+  --spk-4: #5e7f1e;
+  --spk-5: #b4531c;
+  --spk-6: #6a4fc9;
+  --spk-7: #4b6175;
+
+  /* type */
+  --font-ui: "Recursive Variable", "Segoe UI", system-ui, sans-serif;
+  --font-quote: "Newsreader", Georgia, "Times New Roman", serif;
+  --ui-casual: "CASL" 0.15, "MONO" 0, "CRSV" 0.5;
+  --ui-mono: "CASL" 0, "MONO" 1;
+  --display-casual: "CASL" 0.45, "MONO" 0;
+  --fs-xs: 0.8125rem; /* 13px; labels, timecodes */
+  --fs-sm: 0.875rem;
+  --fs-md: 0.9375rem; /* 15px body */
+  --fs-lg: 1.125rem; /* 18 */
+  --fs-xl: 1.35rem; /* 21.6 */
+  --fs-2xl: 1.625rem; /* 26 */
+  --fs-3xl: 1.9375rem; /* 31 */
+  --fs-4xl: 2.3125rem; /* 37 */
+  --lh-ui: 1.45;
+  --lh-quote: 1.55;
+  --measure: 62ch;
+
+  /* space (4px base) */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --s-12: 48px;
+
+  /* shape */
+  --r-chip: 3px;
+  --r-panel: 6px;
+  --r-round: 999px;
+  --shadow-float: 0 18px 48px -12px rgb(19 32 43 / 0.35), 0 2px 6px rgb(19 32 43 / 0.12);
+  --rail-w: 76px;
+  --drawer-w: 440px;
+
+  /* motion */
+  --t-fast: 120ms;
+  --t-med: 220ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --t-fast: 0ms;
+    --t-med: 0ms;
+  }
+}

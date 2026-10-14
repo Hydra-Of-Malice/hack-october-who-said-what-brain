@@ -25,3 +25,8 @@ models/
 Thumbs.db
 .vscode/
 .idea/
+
+# Runtime data and models
+data/
+apps/web/dist/
+*.tsbuildinfo
