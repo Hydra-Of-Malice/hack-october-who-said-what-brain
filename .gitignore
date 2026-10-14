@@ -1,0 +1,27 @@
+# Read-only clones of pre-window reference repos (not part of the submission)
+reference/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python / Node
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+dist/
+build/
+.next/
+
+# Models and large media
+models/
+*.gguf
+*.safetensors
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
