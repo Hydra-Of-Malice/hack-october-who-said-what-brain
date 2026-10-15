@@ -7,6 +7,10 @@ import { asActionItem, initialRoom, roomReducer, type RoomAction, type RoomState
 
 type Data = Record<string, unknown>;
 
+// The event stream replays recent history when the page connects; only events from after the page opened
+// get the "just extracted" highlight (5 s slack for clock drift between server and browser).
+const PAGE_OPENED_S = Date.now() / 1000 - 5;
+
 function toAction(e: BusEvent): RoomAction | null {
   const d = (e.data ?? {}) as Data;
   switch (e.type) {
@@ -19,7 +23,9 @@ function toAction(e: BusEvent): RoomAction | null {
         ? { type: "speaker-named", track: d.track, name: typeof d.name === "string" ? d.name : null, personId: (d.person_id as string) ?? null }
         : null;
     case "insight.created":
-      return typeof d.kind === "string" ? { type: "insight", kind: d.kind, item: d.item } : null;
+      return typeof d.kind === "string"
+        ? { type: "insight", kind: d.kind, item: d.item, recent: e.ts >= PAGE_OPENED_S }
+        : null;
     case "action.updated": {
       const item = asActionItem(d);
       return item ? { type: "action-item", item } : null;

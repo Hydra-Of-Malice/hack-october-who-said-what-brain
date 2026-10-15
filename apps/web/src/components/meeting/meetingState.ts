@@ -44,7 +44,7 @@ export type RoomAction =
   | { type: "speaker-merged"; from: string; to: string }
   | { type: "speaker-named"; track: string; name: string | null; personId?: string | null }
   | { type: "speaker"; speaker: Speaker }
-  | { type: "insight"; kind: string; item: unknown }
+  | { type: "insight"; kind: string; item: unknown; recent?: boolean }
   | { type: "action-item"; item: ActionItem }
   | { type: "graph-write"; utterances: number; ms: number }
   | { type: "listener"; state: string; lagS: number | null; detail: string }
@@ -290,8 +290,10 @@ export function roomReducer(state: RoomState, action: RoomAction): RoomState {
       const next = rename(state, action.speaker.track, action.speaker.name, action.speaker.person_id);
       return { ...next, speakers: next.speakers.map((s) => (s.track === action.speaker.track ? { ...s, ...action.speaker } : s)) };
     }
-    case "insight":
-      return applyInsight(state, action.kind, action.item);
+    case "insight": {
+      const next = applyInsight(state, action.kind, action.item);
+      return action.recent === false ? { ...next, fresh: state.fresh } : next;
+    }
     case "action-item":
       return { ...state, actionItems: upsertById(state.actionItems, action.item) };
     case "graph-write":
