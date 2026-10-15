@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     asr_language: str | None = Field("en", alias="WSW_ASR_LANGUAGE")
     speaker_model: str = Field("speaker_embedding_en.onnx", alias="WSW_SPEAKER_MODEL")
     speaker_threshold: float = Field(0.55, alias="WSW_SPEAKER_THRESHOLD")
-    max_utterance_s: float = Field(12.0, alias="WSW_MAX_UTTERANCE_S")
+    max_utterance_s: float = Field(8.0, alias="WSW_MAX_UTTERANCE_S")
 
     # Brain
     extract_every: int = Field(6, alias="WSW_EXTRACT_EVERY")

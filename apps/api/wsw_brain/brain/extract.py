@@ -28,7 +28,11 @@ SYSTEM_PROMPT = """You extract structured meeting notes from a transcript window
  "entities": [{"name": str, "kind": "product"|"customer"|"vendor"|"org"|"other"}],
  "mentions": {"<utterance id>": [topic or entity names]}}
 Rules:
-- A decision is something the group settled on. An action item is a concrete task someone will do.
+- A decision is something the group settled on: stated as final ("we'll go with", "agreed", "locked",
+  "final") or accepted without objection. A proposal, preference or opinion ("I want", "I'd suggest",
+  "what if") is NOT a decision until someone agrees to it. An action item is a concrete task someone will do.
+- Only set "supersedes" when this window explicitly changes an earlier decision, not when it restates it.
+- Refer to people by name in the text; never write speaker tracks like "S2" inside "text".
 - Write each item as one short sentence in plain words. Owners and proposers use the speaker track (S1, S2...)
   when the person is in the speaker list, otherwise the name as spoken.
 - "due" is the deadline as spoken ("Friday", "next week"), or null.
