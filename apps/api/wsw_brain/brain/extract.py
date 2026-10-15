@@ -221,6 +221,8 @@ class _Window:
         if ":" in value:  # a full id from another meeting (or invented) is never remapped
             return None
         matches = self.by_suffix.get(value, [])  # bare "u00003": accept when unambiguous
+        if not matches and value.isdigit():  # Gemma 4 E4B often abbreviates "mx:u00003" to 3
+            matches = self.by_suffix.get(f"u{int(value):05d}", [])
         return matches[0] if len(matches) == 1 else None
 
     def track(self, raw: Any) -> str | None:
