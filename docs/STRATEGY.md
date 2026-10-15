@@ -206,7 +206,7 @@ Graph per workspace: `wsw_<workspace>` (default `wsw_demo`). Pin the engine to `
 | 0:00–0:15 | "Every company loses what was said in meetings. This brain remembers who said what, and you can just ask it." | Home: three past meetings, a speaker-lane preview |
 | 0:15–0:45 | Start a live meeting. Two teammates talk for 25 s about a launch date and an owner | Speaker lanes appear live (S1, S2); the FalkorDB write counter ticks; a decision and an action item pop into the side rail, each labelled "extracted by Gemma 4" |
 | 0:45–1:05 | Name the speakers by clicking; stop the meeting. Open the graph inspector | Utterances → Speakers → Persons; Decision `EVIDENCED_BY` an utterance |
-| 1:05–1:35 | A judge presses the mic: "What did Priya commit to in the pricing review?" | Gemma 4 (native audio) shows its transcript chip; a spoken answer; citations "Priya · Pricing review · 03:12" |
+| 1:05–1:35 | A judge presses the mic: "What did Priya commit to in the pricing review?" | Gemma 4 (native audio) shows its transcript chip; a spoken answer; citation "Priya, Self-serve pricing review, 05:01" (pricing page and FAQ by Monday) |
 | 1:35–1:55 | Follow-up: "And when is that due?" | Context carried over; answer cites the due date |
 | 1:55–2:15 | "Mark it done." | The action item flips to done in the commitments board (graph write) |
 | 2:15–2:40 | "Why this answer" | Cited quotes, retrieval path (full-text + vector), Cypher, mini subgraph |
