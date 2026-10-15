@@ -1,0 +1,69 @@
+/* Quoted speech used as evidence: a tape-label rule in the speaker's colour. */
+.evq {
+  margin: 0;
+  padding: var(--s-1) 0 var(--s-1) var(--s-3);
+  border-left: 3px solid var(--spk);
+  min-width: 0;
+}
+
+.evq__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-1) var(--s-3);
+  font-size: var(--fs-sm);
+  line-height: 1.3;
+}
+
+.evq__who {
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.evq__where {
+  color: var(--ink-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.evq__play {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  min-height: 28px;
+  padding: 0 var(--s-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-chip);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+.evq__play:hover {
+  border-color: var(--spk);
+  background: var(--surface-2);
+}
+.evq__play svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 1.75;
+  color: var(--spk);
+  fill: var(--spk);
+}
+
+.evq__text {
+  margin: var(--s-1) 0 0;
+  max-width: var(--measure);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.evq--sm .evq__text {
+  font-size: var(--fs-md);
+}
+
+.evq__note {
+  margin-top: var(--s-1);
+  font-size: var(--fs-xs);
+  color: var(--ink-2);
+}

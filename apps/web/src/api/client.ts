@@ -30,7 +30,8 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${API_BASE}${path}`, init);
-  } catch {
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") throw e;
     throw new ApiError(0, "Can't reach the server. Check that the API is running.");
   }
   if (!res.ok) {

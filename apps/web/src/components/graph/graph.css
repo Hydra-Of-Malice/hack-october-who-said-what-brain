@@ -1,0 +1,35 @@
+.gv {
+  position: relative;
+  width: 100%;
+  min-height: 160px;
+  overflow: hidden;
+  background: var(--surface);
+  touch-action: none;
+}
+.gv--fill {
+  height: 100%;
+}
+.gv canvas {
+  display: block;
+}
+.gv__loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+}
+
+.kind-swatch {
+  flex: none;
+  display: inline-block;
+  vertical-align: -2px;
+}
+
+/* the hover/selection tooltip of react-force-graph is disabled; keep its container out of the way */
+.gv .graph-tooltip,
+.gv .float-tooltip-kap {
+  display: none;
+}

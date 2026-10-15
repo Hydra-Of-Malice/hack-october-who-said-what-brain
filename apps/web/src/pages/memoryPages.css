@@ -1,0 +1,162 @@
+/* Shared layout for the cross-meeting views: Commitments, Decisions, People, Graph. */
+.mp {
+  max-width: 1120px;
+  padding: var(--s-8) var(--s-8) var(--s-12);
+}
+.mp--wide {
+  max-width: none;
+}
+
+.mp-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--s-4) var(--s-6);
+  margin-bottom: var(--s-6);
+}
+.mp-head > div:first-child {
+  flex: 1 1 36ch;
+  min-width: 0;
+}
+.mp-sub {
+  margin-top: var(--s-2);
+  max-width: 60ch;
+  color: var(--ink-2);
+}
+.mp-count {
+  margin-top: var(--s-1);
+  font-size: var(--fs-sm);
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* segmented filter on native radios */
+.mp-seg {
+  display: flex;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.mp-seg label {
+  position: relative;
+  display: flex;
+}
+.mp-seg input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.mp-seg span {
+  display: block;
+  min-height: 36px;
+  padding: 7px var(--s-4);
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+  font-weight: 550;
+}
+.mp-seg label + label span {
+  border-left: 0;
+}
+.mp-seg label:first-of-type span {
+  border-radius: var(--r-chip) 0 0 var(--r-chip);
+}
+.mp-seg label:last-of-type span {
+  border-radius: 0 var(--r-chip) var(--r-chip) 0;
+}
+.mp-seg input:checked + span {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--on-ink);
+}
+.mp-seg input:focus-visible + span {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.mp-state {
+  padding: var(--s-6) 0;
+  color: var(--ink-2);
+}
+.mp-empty {
+  padding: var(--s-8) var(--s-6);
+}
+.mp-empty h2 {
+  font-size: var(--fs-lg);
+}
+.mp-empty p {
+  margin-top: var(--s-2);
+  max-width: 52ch;
+  color: var(--ink-2);
+}
+.mp-empty .btn {
+  margin-top: var(--s-4);
+}
+
+.mp-alert {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+  margin-bottom: var(--s-4);
+  padding: var(--s-2) var(--s-3);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--r-chip);
+  background: var(--warn-soft);
+}
+.mp-alert p {
+  flex: 1 1 24ch;
+}
+
+.mp-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+  margin-bottom: var(--s-4);
+  font-size: var(--fs-sm);
+  color: var(--ink-2);
+}
+.mp-filter strong {
+  color: var(--ink);
+}
+
+.btn.mp-mini {
+  min-height: 30px;
+  padding: 0 var(--s-2);
+  gap: var(--s-1);
+  font-size: var(--fs-xs);
+}
+.btn.mp-mini svg {
+  width: 14px;
+  height: 14px;
+}
+
+.mp-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-1) var(--s-4);
+  font-size: var(--fs-sm);
+  color: var(--ink-2);
+}
+.mp-meta a {
+  color: var(--ink);
+  font-weight: 550;
+}
+
+@media (max-width: 767px) {
+  .mp {
+    padding: var(--s-5) var(--s-4) var(--s-12);
+  }
+  .mp-head {
+    margin-bottom: var(--s-4);
+  }
+  .mp-empty {
+    padding: var(--s-6) var(--s-4);
+  }
+}

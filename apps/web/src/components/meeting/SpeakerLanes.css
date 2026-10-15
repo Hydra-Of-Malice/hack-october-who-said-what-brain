@@ -1,0 +1,321 @@
+/* Speaker lanes: a multitrack session view. One lane per speaker, blocks where they spoke, a playhead. */
+.lanes {
+  --names-w: 172px;
+  --ruler-h: 26px;
+  --lane-h: 46px;
+  --block-h: 24px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.lanes-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-2) var(--s-6);
+  padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--line);
+}
+
+.lanes-title {
+  font-size: var(--fs-md);
+  font-weight: 650;
+}
+
+.lanes-count {
+  margin-left: var(--s-1);
+  color: var(--ink-2);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.lanes-error {
+  margin: 0;
+  padding: var(--s-2) var(--s-4);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: var(--fs-sm);
+  border-bottom: 1px solid var(--line);
+}
+
+.lanes-empty {
+  padding: var(--s-6) var(--s-4);
+  color: var(--ink-2);
+}
+
+.lanes-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
+.lanes-inner {
+  display: grid;
+  grid-template-columns: var(--names-w) minmax(var(--track-min, 560px), 1fr);
+  /* as wide as the tracks, so the sticky names column has room to stay put while scrolling */
+  width: max-content;
+  min-width: 100%;
+}
+
+/* names column stays put while the tracks scroll under it */
+.lanes-names {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  border-bottom-left-radius: var(--r-panel);
+}
+
+.lanes-corner {
+  height: var(--ruler-h);
+  border-bottom: 1px solid var(--line);
+}
+
+.lane-name {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  height: var(--lane-h);
+  padding: 0 var(--s-2) 0 var(--s-3);
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+.lane-name:last-child {
+  border-bottom: 0;
+}
+
+.lane-name-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.lane-swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--r-chip);
+  background: var(--spk);
+}
+
+.lane-name-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  min-width: 0;
+  min-height: 24px;
+  padding: 0 var(--s-1);
+  margin-left: calc(-1 * var(--s-1));
+  border: 1px solid transparent;
+  border-radius: var(--r-chip);
+  background: none;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: text;
+}
+.lane-name-btn:hover {
+  border-color: var(--line);
+  background: var(--surface-2);
+}
+.lane-name-btn svg {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  stroke-width: 1.75;
+  color: var(--ink-3);
+}
+.lane-name-btn:hover svg,
+.lane-name-btn:focus-visible svg {
+  color: var(--ink);
+}
+
+.lane-name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lane-input {
+  min-height: 28px;
+  padding: 2px var(--s-2);
+  font-size: var(--fs-sm);
+}
+
+.lane-talk {
+  padding-left: 18px;
+  color: var(--ink-2);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* tracks */
+.lanes-tracks {
+  position: relative;
+  min-width: 0;
+}
+
+.lanes-ruler {
+  position: relative;
+  height: var(--ruler-h);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.lanes-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  padding-left: var(--s-1);
+  border-left: 1px solid var(--line-strong);
+  color: var(--ink-2);
+  white-space: nowrap;
+  transition: left var(--t-med) var(--ease);
+}
+
+.lanes-gridlines {
+  position: absolute;
+  top: var(--ruler-h);
+  bottom: 0;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+}
+.lanes-gridlines span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line);
+  transition: left var(--t-med) var(--ease);
+}
+
+.lane-track {
+  position: relative;
+  height: var(--lane-h);
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--spk) 5%, var(--surface-2));
+}
+.lane-track:last-child {
+  border-bottom: 0;
+}
+.can-scrub .lane-track,
+.can-scrub .lanes-ruler {
+  cursor: pointer;
+}
+
+.lane-block {
+  position: absolute;
+  top: calc((var(--lane-h) - var(--block-h)) / 2);
+  height: var(--block-h);
+  min-width: 3px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-chip);
+  background: var(--spk);
+  cursor: pointer;
+  z-index: 1;
+  transition:
+    left var(--t-med) var(--ease),
+    width var(--t-med) var(--ease);
+}
+.lane-block:hover {
+  background: color-mix(in srgb, var(--spk) 82%, var(--ink));
+}
+.lane-block:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  z-index: 2;
+}
+.lane-block.is-active {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  z-index: 2;
+}
+.lane-block.is-unsure {
+  opacity: 0.55;
+}
+
+/* the one deliberate effect: a new block is laid down out of the playhead */
+.lane-block.is-fresh {
+  transform-origin: right center;
+  animation: lane-grow 480ms var(--ease) both;
+}
+@keyframes lane-grow {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+.lanes-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--ink);
+  pointer-events: none;
+  z-index: 2;
+}
+.lanes-playhead[hidden] {
+  display: none;
+}
+.lanes-playhead.is-live {
+  background: var(--rec);
+}
+
+.lanes-playhead-flag {
+  position: absolute;
+  top: 3px;
+  left: 2px;
+  padding: 1px var(--s-1);
+  border-radius: var(--r-chip);
+  background: var(--ink);
+  color: var(--on-ink);
+  line-height: 1.4;
+}
+.lanes-playhead-flag:empty {
+  display: none;
+}
+.is-live .lanes-playhead-flag {
+  background: var(--rec);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lane-block.is-fresh {
+    animation: none;
+  }
+}
+
+@media (max-width: 767px) {
+  .lanes {
+    --names-w: 112px;
+    --lane-h: 44px;
+  }
+  .lane-talk {
+    padding-left: 0;
+  }
+  .lane-talk-verb {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+  .lane-name {
+    padding-left: var(--s-2);
+  }
+}
