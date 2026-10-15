@@ -55,6 +55,11 @@ _COMPLETE_FILLER = frozenset({
     "check", "off", "as", "done", "complete", "completed", "finished", "closed", "close", "finish", "it",
     "that", "this", "the", "action", "item", "items", "task", "one",
 })  # fmt: skip
+_QUESTION_WORDS = frozenset({
+    "what", "when", "who", "whom", "where", "why", "how", "which", "is", "are", "was", "were", "did", "does",
+    "do", "her", "his", "their", "our", "my", "your", "its", "a", "an", "of", "for", "to", "by", "due",
+    "about", "on", "in", "at", "be", "will", "would", "should",
+})  # fmt: skip
 
 
 def tool_specs() -> list[dict[str, Any]]:
@@ -282,12 +287,37 @@ def is_follow_up(question: str) -> bool:
 def completion_request(question: str) -> str | None:
     """For "mark it done" / "mark the billing page as complete": the words naming the item ("" for "it").
     None when the question is not a request to complete an action item."""
-    if not _COMPLETE_INTENT.search(question):
-        return None
-    return " ".join(w for w in re.findall(r"[A-Za-z0-9']+", question) if w.lower() not in _COMPLETE_FILLER)
+    # Test each sentence: "When is her pricing page due? Mark it done." asks for completion in its second
+    # sentence, and names the item ("pricing page") in the first.
+    sentences = re.split(r"(?<=[.?!;])\s+", question.strip())
+    for i, sentence in enumerate(sentences):
+        if not _COMPLETE_INTENT.search(sentence):
+            continue
+        words = re.findall(r"[A-Za-z0-9']+", sentence)
+        description = " ".join(w for w in words if w.lower() not in _COMPLETE_FILLER)
+        if description:
+            return description
+        others = " ".join(sentences[:i] + sentences[i + 1 :])
+        hint = [
+            w for w in re.findall(r"[A-Za-z0-9']+", others)
+            if w.lower() not in _COMPLETE_FILLER and w.lower() not in _QUESTION_WORDS
+        ]
+        return " ".join(hint)
+    return None
+
+
+def strip_tool_text(text: str, names: set[str]) -> str:
+    """Remove tool calls a model printed into its answer ("[complete_action_item(item_id='x')]")."""
+    for name in names:
+        text = re.sub(rf"\[?\s*{name}\s*\([^()]*\)\s*\]?", "", text)
+        text = re.sub(rf"call:{name}\s*\{{[^{{}}]*\}}", "", text)
+    return text
 
 
 _TOOL_TEXT = re.compile(r"call:(\w+)\s*(\{.*\})", re.DOTALL)
+# Python-style pseudo calls a small model may print instead of calling: [complete_action_item(item_id='x')]
+_TOOL_PYCALL = re.compile(r"\b(\w+)\(([^()]*)\)")
+_TOOL_KWARG = re.compile(r"(\w+)\s*=\s*(?:'([^']*)'|\"([^\"]*)\"|([\w.:-]+))")
 
 
 def tool_call_from_text(text: str, names: set[str]) -> ToolCall | None:
@@ -299,6 +329,10 @@ def tool_call_from_text(text: str, names: set[str]) -> ToolCall | None:
     if match and match.group(1) in names:
         args = parse_json_object(match.group(2))
         return ToolCall(name=match.group(1), arguments=args or {})
+    for py in _TOOL_PYCALL.finditer(text):
+        if py.group(1) in names:
+            kwargs = {k: next((v for v in vals if v), "") for k, *vals in _TOOL_KWARG.findall(py.group(2))}
+            return ToolCall(name=py.group(1), arguments=kwargs)
     data = parse_json_object(text) if text.lstrip().startswith(("{", "`")) else None
     if not data:
         return None
@@ -370,6 +404,7 @@ class VoiceAgent:
         if not turn.trace and self.use_tools:
             answer = await self._complete_if_requested(turn, question) or answer
 
+        answer = strip_tool_text(answer, set(self._handlers))
         clean, cited = resolve_citations(answer, turn.evidence)
         if not clean:
             clean = "Sorry, I couldn't put an answer together."
