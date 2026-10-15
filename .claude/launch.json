@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "wsw-brain",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "--project", "apps/api", "python", "-m", "wsw_brain", "--host", "127.0.0.1", "--port", "8000"],
+      "port": 8000
+    }
+  ]
+}
