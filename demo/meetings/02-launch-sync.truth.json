@@ -1,0 +1,230 @@
+{
+  "meeting_id": "02-launch-sync",
+  "title": "Self-serve launch sync",
+  "audio": "demo/audio/02-launch-sync.ogg",
+  "sample_rate": 16000,
+  "duration_s": 236.31,
+  "engine": "Kokoro-82M v1.0 (kokoro-v1.0.onnx) via kokoro-onnx 0.6.1",
+  "voices": {
+    "Priya": {
+      "voice": "hf_alpha",
+      "speed": 1.05,
+      "lang": "en-us"
+    },
+    "Meera": {
+      "voice": "bf_emma",
+      "speed": 1.0,
+      "lang": "en-gb"
+    },
+    "Rahul": {
+      "voice": "bm_george",
+      "speed": 1.05,
+      "lang": "en-gb"
+    }
+  },
+  "turns": [
+    {
+      "seq": 0,
+      "speaker": "Priya",
+      "t_start": 0.6,
+      "t_end": 7.69,
+      "text": "Quick launch sync. Arjun is heads down on the usage meter today, so it's the three of us. Meera, how did the deck land?"
+    },
+    {
+      "seq": 1,
+      "speaker": "Meera",
+      "t_start": 8.29,
+      "t_end": 15.27,
+      "text": "The revised deck went to Saffron Basket yesterday, so that one is done. But their reaction to the Starter price was not great."
+    },
+    {
+      "seq": 2,
+      "speaker": "Rahul",
+      "t_start": 15.77,
+      "t_end": 21.07,
+      "text": "What did they actually say? Was it the price itself, or the shipment limit that bothered them?"
+    },
+    {
+      "seq": 3,
+      "speaker": "Meera",
+      "t_start": 21.57,
+      "t_end": 34.9,
+      "text": "The price. Trackwise just cut its small-shipper plan from 3,999 to 3,499, so at 4,999 we're over forty percent more expensive."
+    },
+    {
+      "seq": 4,
+      "speaker": "Priya",
+      "t_start": 35.5,
+      "t_end": 40.74,
+      "text": "Is that just one customer pushing back, or are we hearing the same thing from other accounts?"
+    },
+    {
+      "seq": 5,
+      "speaker": "Meera",
+      "t_start": 41.24,
+      "t_end": 47.15,
+      "text": "Other accounts too. Two of the five trial accounts that signed up this week asked for a price under four thousand."
+    },
+    {
+      "seq": 6,
+      "speaker": "Rahul",
+      "t_start": 47.95,
+      "t_end": 59.33,
+      "text": "I expected this, so I ran the numbers again last night. If Starter includes one thousand shipments instead of fifteen hundred, 3,999 still works."
+    },
+    {
+      "seq": 7,
+      "speaker": "Priya",
+      "t_start": 59.93,
+      "t_end": 66.1,
+      "text": "Walk us through it, because on Tuesday you said 3,999 was below your floor."
+    },
+    {
+      "seq": 8,
+      "speaker": "Rahul",
+      "t_start": 66.6,
+      "t_end": 80.14,
+      "text": "A thousand shipments cost us about eighteen hundred rupees. At 3,999 that's a 55 percent margin, which is better than the 46 percent we accepted on Tuesday."
+    },
+    {
+      "seq": 9,
+      "speaker": "Meera",
+      "t_start": 80.84,
+      "t_end": 86.14,
+      "text": "And heavy users still pay four rupees per shipment above a thousand, so the busy accounts are covered."
+    },
+    {
+      "seq": 10,
+      "speaker": "Priya",
+      "t_start": 86.74,
+      "t_end": 92.26,
+      "text": "My worry is that a thousand shipments looks small next to Trackwise. What does their plan include?"
+    },
+    {
+      "seq": 11,
+      "speaker": "Meera",
+      "t_start": 92.76,
+      "t_end": 100.34,
+      "text": "The same thousand shipments. But they charge seven rupees for overage, so above about twelve hundred shipments a month we're the cheaper option."
+    },
+    {
+      "seq": 12,
+      "speaker": "Rahul",
+      "t_start": 101.04,
+      "t_end": 109.53,
+      "text": "Then I'm fine moving Starter to 3,999 with a thousand shipments. Overage stays at four rupees."
+    },
+    {
+      "seq": 13,
+      "speaker": "Priya",
+      "t_start": 110.13,
+      "t_end": 122.57,
+      "text": "Okay, let's change it. Starter moves from 4,999 to 3,999 a month, with one thousand shipments included. This replaces what we decided on Tuesday."
+    },
+    {
+      "seq": 14,
+      "speaker": "Meera",
+      "t_start": 123.37,
+      "t_end": 128.02,
+      "text": "Good. That makes my first calls a lot easier, especially when we're up against Trackwise."
+    },
+    {
+      "seq": 15,
+      "speaker": "Rahul",
+      "t_start": 128.52,
+      "t_end": 133.5,
+      "text": "The annual discount stays at fifteen percent, though. I don't want to reopen that one."
+    },
+    {
+      "seq": 16,
+      "speaker": "Priya",
+      "t_start": 134.1,
+      "t_end": 138.81,
+      "text": "Agreed, fifteen percent stands. So what has to change downstream before launch?"
+    },
+    {
+      "seq": 17,
+      "speaker": "Rahul",
+      "t_start": 139.41,
+      "t_end": 148.55,
+      "text": "The Starter plan in Razorpay needs to change. I'll update it to 3,999 with the new shipment limit by Monday."
+    },
+    {
+      "seq": 18,
+      "speaker": "Priya",
+      "t_start": 149.25,
+      "t_end": 158.18,
+      "text": "And I'm still drafting the pricing page, so it'll go out with 3,999 and the thousand shipment cap. That's still on track for Monday."
+    },
+    {
+      "seq": 19,
+      "speaker": "Meera",
+      "t_start": 158.78,
+      "t_end": 170.32,
+      "text": "Change the FAQ example as well. Two thousand shipments on the new Starter would be 3,999 plus four thousand, so 7,999 rupees."
+    },
+    {
+      "seq": 20,
+      "speaker": "Priya",
+      "t_start": 170.92,
+      "t_end": 178.51,
+      "text": "Yes, I'll use that. Someone needs to tell Arjun, because the usage meter warning was set at ninety percent of fifteen hundred."
+    },
+    {
+      "seq": 21,
+      "speaker": "Rahul",
+      "t_start": 179.01,
+      "t_end": 185.02,
+      "text": "Ninety percent of a thousand is nine hundred. That's a config value, isn't it, not a rebuild?"
+    },
+    {
+      "seq": 22,
+      "speaker": "Priya",
+      "t_start": 185.52,
+      "t_end": 192.89,
+      "text": "It should be config. I'll message Arjun today so the meter warns at nine hundred shipments, and he can still ship it on Friday."
+    },
+    {
+      "seq": 23,
+      "speaker": "Meera",
+      "t_start": 193.59,
+      "t_end": 200.8,
+      "text": "I'll email Saffron Basket and the two trial accounts with the new Starter price by tomorrow morning, ahead of their renewal call."
+    },
+    {
+      "seq": 24,
+      "speaker": "Priya",
+      "t_start": 201.6,
+      "t_end": 205.72,
+      "text": "Does the November second launch date still hold with all of these changes?"
+    },
+    {
+      "seq": 25,
+      "speaker": "Rahul",
+      "t_start": 206.22,
+      "t_end": 212.36,
+      "text": "It holds. The GST registration is still pending, but I'll know by Tuesday, as planned."
+    },
+    {
+      "seq": 26,
+      "speaker": "Priya",
+      "t_start": 213.06,
+      "t_end": 224.77,
+      "text": "Good. So to recap, Starter is now 3,999 a month with a thousand shipments, overage is four rupees, annual stays at fifteen percent, and we launch November second."
+    },
+    {
+      "seq": 27,
+      "speaker": "Meera",
+      "t_start": 225.37,
+      "t_end": 230.21,
+      "text": "And the Saffron Basket deck is done, with the price update going out to them tomorrow morning."
+    },
+    {
+      "seq": 28,
+      "speaker": "Priya",
+      "t_start": 230.71,
+      "t_end": 234.81,
+      "text": "Right, that's everything. Thanks, both of you. See you at Monday's standup."
+    }
+  ]
+}

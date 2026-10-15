@@ -1,0 +1,354 @@
+{
+  "meeting_id": "01-pricing-review",
+  "title": "Self-serve pricing review",
+  "audio": "demo/audio/01-pricing-review.ogg",
+  "sample_rate": 16000,
+  "duration_s": 380.27,
+  "engine": "Kokoro-82M v1.0 (kokoro-v1.0.onnx) via kokoro-onnx 0.6.1",
+  "voices": {
+    "Priya": {
+      "voice": "hf_alpha",
+      "speed": 1.05,
+      "lang": "en-us"
+    },
+    "Arjun": {
+      "voice": "am_michael",
+      "speed": 1.0,
+      "lang": "en-us"
+    },
+    "Meera": {
+      "voice": "bf_emma",
+      "speed": 1.0,
+      "lang": "en-gb"
+    },
+    "Rahul": {
+      "voice": "bm_george",
+      "speed": 1.05,
+      "lang": "en-gb"
+    }
+  },
+  "turns": [
+    {
+      "seq": 0,
+      "speaker": "Priya",
+      "t_start": 0.6,
+      "t_end": 8.9,
+      "text": "Okay, let's start. Today we lock the self-serve pricing for Kitepost, so sales can quote it and Arjun's team can build billing against it."
+    },
+    {
+      "seq": 1,
+      "speaker": "Rahul",
+      "t_start": 9.5,
+      "t_end": 19.95,
+      "text": "Before we get into tiers, keep one number in mind. Our cost per tracked shipment is about 1.8 rupees, once you include WhatsApp messages and map lookups."
+    },
+    {
+      "seq": 2,
+      "speaker": "Priya",
+      "t_start": 20.65,
+      "t_end": 27.7,
+      "text": "Fine. So the proposal on the table is three tiers: Starter, Growth and Enterprise, with Enterprise staying sales-led."
+    },
+    {
+      "seq": 3,
+      "speaker": "Meera",
+      "t_start": 28.3,
+      "t_end": 38.56,
+      "text": "And I want Starter at 3,999 rupees a month. Trackwise charges small shippers 3,999, and they are who we lose deals to."
+    },
+    {
+      "seq": 4,
+      "speaker": "Rahul",
+      "t_start": 39.06,
+      "t_end": 50.28,
+      "text": "At 3,999 with fifteen hundred shipments included, a busy Starter account runs at about 32 percent margin. I can't sign off on that."
+    },
+    {
+      "seq": 5,
+      "speaker": "Meera",
+      "t_start": 50.88,
+      "t_end": 57.88,
+      "text": "Most Starter accounts won't come close to fifteen hundred. The Saffron Basket pilot averaged around nine hundred shipments a month."
+    },
+    {
+      "seq": 6,
+      "speaker": "Rahul",
+      "t_start": 58.38,
+      "t_end": 66.07,
+      "text": "Saffron Basket is one customer. I'd rather price for the busy accounts and be pleasantly surprised by the quiet ones."
+    },
+    {
+      "seq": 7,
+      "speaker": "Arjun",
+      "t_start": 66.97,
+      "t_end": 77.19,
+      "text": "Can I add the engineering angle? If we cap included shipments and charge overage, the base price matters less, because heavy users pay their own way."
+    },
+    {
+      "seq": 8,
+      "speaker": "Priya",
+      "t_start": 77.79,
+      "t_end": 83.24,
+      "text": "That's where I was going too. Rahul, what overage rate per shipment keeps us safe on margin?"
+    },
+    {
+      "seq": 9,
+      "speaker": "Rahul",
+      "t_start": 83.84,
+      "t_end": 91.51,
+      "text": "Four rupees per extra shipment. That's more than double our cost, and still cheaper than what Trackwise charges for overage."
+    },
+    {
+      "seq": 10,
+      "speaker": "Meera",
+      "t_start": 92.01,
+      "t_end": 97.98,
+      "text": "Four rupees is fine. Customers accept overage if the dashboard shows it to them before the invoice does."
+    },
+    {
+      "seq": 11,
+      "speaker": "Arjun",
+      "t_start": 98.68,
+      "t_end": 105.76,
+      "text": "Which means we need a usage meter in the product. Right now we only count shipments in the nightly billing job."
+    },
+    {
+      "seq": 12,
+      "speaker": "Priya",
+      "t_start": 106.56,
+      "t_end": 117.16,
+      "text": "Okay, let me propose something concrete. Starter at 4,999 rupees a month, fifteen hundred shipments included, and four rupees per shipment after that."
+    },
+    {
+      "seq": 13,
+      "speaker": "Meera",
+      "t_start": 117.86,
+      "t_end": 125.26,
+      "text": "I still think 4,999 makes the first sales call harder. But with a visible usage meter, I can sell it."
+    },
+    {
+      "seq": 14,
+      "speaker": "Rahul",
+      "t_start": 125.76,
+      "t_end": 134.36,
+      "text": "I'm comfortable with 4,999. That keeps a busy Starter account at around 46 percent margin."
+    },
+    {
+      "seq": 15,
+      "speaker": "Priya",
+      "t_start": 134.96,
+      "t_end": 144.01,
+      "text": "Then that's decided. We'll go with the 4,999 rupee Starter tier, with fifteen hundred shipments and four rupee overage."
+    },
+    {
+      "seq": 16,
+      "speaker": "Arjun",
+      "t_start": 144.81,
+      "t_end": 152.09,
+      "text": "Noted on Starter. And for the Growth tier, are we still holding at 14,999 a month?"
+    },
+    {
+      "seq": 17,
+      "speaker": "Priya",
+      "t_start": 152.59,
+      "t_end": 160.8,
+      "text": "Yes, 14,999 for ten thousand shipments, plus WhatsApp delivery updates and two warehouse locations."
+    },
+    {
+      "seq": 18,
+      "speaker": "Meera",
+      "t_start": 161.4,
+      "t_end": 167.42,
+      "text": "Monsoon Apparel asked about Growth last week. They run three warehouses, so two locations won't cover them."
+    },
+    {
+      "seq": 19,
+      "speaker": "Priya",
+      "t_start": 167.92,
+      "t_end": 174.12,
+      "text": "Then Monsoon is an Enterprise conversation. Let's not bend the Growth tier around a single account."
+    },
+    {
+      "seq": 20,
+      "speaker": "Meera",
+      "t_start": 174.72,
+      "t_end": 179.31,
+      "text": "Fair enough. I'll take Monsoon Apparel through the Enterprise proposal next week instead."
+    },
+    {
+      "seq": 21,
+      "speaker": "Rahul",
+      "t_start": 180.21,
+      "t_end": 185.33,
+      "text": "Next, annual billing. Meera, you wanted twenty percent off for annual plans, right?"
+    },
+    {
+      "seq": 22,
+      "speaker": "Meera",
+      "t_start": 185.83,
+      "t_end": 193.05,
+      "text": "Twenty percent. Annual prepay is how we get cash up front from small businesses, and twenty is what makes people actually choose it."
+    },
+    {
+      "seq": 23,
+      "speaker": "Rahul",
+      "t_start": 193.55,
+      "t_end": 201.28,
+      "text": "Twenty is too much. At twenty percent off, the Starter margin gets thin again. I'd cap the annual discount at fifteen."
+    },
+    {
+      "seq": 24,
+      "speaker": "Meera",
+      "t_start": 201.78,
+      "t_end": 206.67,
+      "text": "Fifteen percent doesn't move anyone. Nobody switches to annual billing for fifteen percent."
+    },
+    {
+      "seq": 25,
+      "speaker": "Rahul",
+      "t_start": 207.27,
+      "t_end": 215.39,
+      "text": "Our own data says otherwise. Forty percent of the Saffron Basket cohort picked annual billing at only twelve percent off."
+    },
+    {
+      "seq": 26,
+      "speaker": "Arjun",
+      "t_start": 216.09,
+      "t_end": 222.16,
+      "text": "Is that cohort big enough to trust, though? If I remember right, it was only about thirty accounts."
+    },
+    {
+      "seq": 27,
+      "speaker": "Rahul",
+      "t_start": 222.66,
+      "t_end": 229.34,
+      "text": "It was 34 accounts. Small, I agree, but it's the only real annual billing data we have so far."
+    },
+    {
+      "seq": 28,
+      "speaker": "Priya",
+      "t_start": 230.14,
+      "t_end": 238.1,
+      "text": "I'm going to side with Rahul on this one. The annual discount is fifteen percent, and we revisit it after ninety days of real data."
+    },
+    {
+      "seq": 29,
+      "speaker": "Meera",
+      "t_start": 238.7,
+      "t_end": 243.9,
+      "text": "Okay. I'm not thrilled, but fifteen percent with a review at ninety days is something I can live with."
+    },
+    {
+      "seq": 30,
+      "speaker": "Arjun",
+      "t_start": 244.8,
+      "t_end": 252.8,
+      "text": "On the build side, the usage meter is the real blocker. Billing can't go live without it, and sales can't demo overage."
+    },
+    {
+      "seq": 31,
+      "speaker": "Priya",
+      "t_start": 253.4,
+      "t_end": 259.53,
+      "text": "Arjun, can you ship the usage meter by Friday? Almost everything else on the launch plan depends on it."
+    },
+    {
+      "seq": 32,
+      "speaker": "Arjun",
+      "t_start": 260.13,
+      "t_end": 266.98,
+      "text": "Friday works. I'll have it on staging Thursday night, with a warning banner at ninety percent of the plan limit."
+    },
+    {
+      "seq": 33,
+      "speaker": "Meera",
+      "t_start": 267.68,
+      "t_end": 276.06,
+      "text": "For sales, I need a revised deck with the new tiers. Saffron Basket's renewal call is on Friday, so I'll send them the revised deck by Thursday."
+    },
+    {
+      "seq": 34,
+      "speaker": "Rahul",
+      "t_start": 276.76,
+      "t_end": 286.5,
+      "text": "And I'll set up the billing plans in Razorpay by Wednesday: monthly and annual for both Starter and Growth. Enterprise stays on manual invoices."
+    },
+    {
+      "seq": 35,
+      "speaker": "Priya",
+      "t_start": 287.3,
+      "t_end": 292.51,
+      "text": "Thanks, Rahul. Now the launch date. I want self-serve live on Monday, November second."
+    },
+    {
+      "seq": 36,
+      "speaker": "Arjun",
+      "t_start": 293.11,
+      "t_end": 301.19,
+      "text": "November second is tight but doable, if the pricing page is final by next week. We need the copy to build the signup flow."
+    },
+    {
+      "seq": 37,
+      "speaker": "Priya",
+      "t_start": 301.69,
+      "t_end": 308.46,
+      "text": "That one's on me. I'll draft the pricing page and the FAQ by Monday, including worked overage examples."
+    },
+    {
+      "seq": 38,
+      "speaker": "Meera",
+      "t_start": 309.06,
+      "t_end": 318.7,
+      "text": "Put a real example in the FAQ. Two thousand shipments on Starter comes to 6,999 rupees in total, and people should see that math."
+    },
+    {
+      "seq": 39,
+      "speaker": "Priya",
+      "t_start": 319.3,
+      "t_end": 325.0,
+      "text": "Good, that example goes in. So we're agreed: self-serve launches on Monday, November second."
+    },
+    {
+      "seq": 40,
+      "speaker": "Rahul",
+      "t_start": 325.7,
+      "t_end": 333.7,
+      "text": "One risk on that date. GST invoicing through Razorpay needs our new tax registration, and that isn't confirmed yet."
+    },
+    {
+      "seq": 41,
+      "speaker": "Priya",
+      "t_start": 334.2,
+      "t_end": 339.31,
+      "text": "Rahul, can you chase the tax registration and confirm it either way by next Tuesday?"
+    },
+    {
+      "seq": 42,
+      "speaker": "Rahul",
+      "t_start": 339.81,
+      "t_end": 348.13,
+      "text": "Yes, I'll confirm the GST registration by next Tuesday. If it slips, we launch with manual invoices for the first week."
+    },
+    {
+      "seq": 43,
+      "speaker": "Priya",
+      "t_start": 348.73,
+      "t_end": 359.27,
+      "text": "Let me recap the decisions. Starter is 4,999 with fifteen hundred shipments, the annual discount is fifteen percent, and we launch on November second."
+    },
+    {
+      "seq": 44,
+      "speaker": "Meera",
+      "t_start": 359.87,
+      "t_end": 372.02,
+      "text": "And the owners: Arjun has the usage meter by Friday, I have the Saffron Basket deck by Thursday, Rahul has Razorpay by Wednesday and GST by Tuesday, and Priya has the pricing page by Monday."
+    },
+    {
+      "seq": 45,
+      "speaker": "Priya",
+      "t_start": 372.62,
+      "t_end": 378.77,
+      "text": "That's it. Thanks, everyone, and please use the pricing channel for anything that changes before launch."
+    }
+  ]
+}

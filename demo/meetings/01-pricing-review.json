@@ -1,0 +1,110 @@
+{
+  "id": "01-pricing-review",
+  "title": "Self-serve pricing review",
+  "date_hint": "Tuesday 13 October 2026, 11:00 IST",
+  "company": "Kitepost, a Bengaluru B2B logistics SaaS (shipment tracking and delivery updates for small and mid-size shippers)",
+  "speakers": [
+    {"name": "Priya", "role": "Head of Product", "voice": "hf_alpha", "speed": 1.05},
+    {"name": "Arjun", "role": "Engineering Lead", "voice": "am_michael", "speed": 1.0},
+    {"name": "Meera", "role": "Sales Lead", "voice": "bf_emma", "speed": 1.0},
+    {"name": "Rahul", "role": "Finance Manager", "voice": "bm_george", "speed": 1.05}
+  ],
+  "turns": [
+    {"speaker": "Priya", "text": "Okay, let's start. Today we lock the self-serve pricing for Kitepost, so sales can quote it and Arjun's team can build billing against it.", "pause_after_s": 0.6},
+    {"speaker": "Rahul", "text": "Before we get into tiers, keep one number in mind. Our cost per tracked shipment is about 1.8 rupees, once you include WhatsApp messages and map lookups.", "pause_after_s": 0.7},
+    {"speaker": "Priya", "text": "Fine. So the proposal on the table is three tiers: Starter, Growth and Enterprise, with Enterprise staying sales-led.", "pause_after_s": 0.6},
+    {"speaker": "Meera", "text": "And I want Starter at 3,999 rupees a month. Trackwise charges small shippers 3,999, and they are who we lose deals to.", "pause_after_s": 0.5},
+    {"speaker": "Rahul", "text": "At 3,999 with fifteen hundred shipments included, a busy Starter account runs at about 32 percent margin. I can't sign off on that.", "pause_after_s": 0.6},
+    {"speaker": "Meera", "text": "Most Starter accounts won't come close to fifteen hundred. The Saffron Basket pilot averaged around nine hundred shipments a month.", "pause_after_s": 0.5},
+    {"speaker": "Rahul", "text": "Saffron Basket is one customer. I'd rather price for the busy accounts and be pleasantly surprised by the quiet ones.", "pause_after_s": 0.9},
+    {"speaker": "Arjun", "text": "Can I add the engineering angle? If we cap included shipments and charge overage, the base price matters less, because heavy users pay their own way.", "pause_after_s": 0.6},
+    {"speaker": "Priya", "text": "That's where I was going too. Rahul, what overage rate per shipment keeps us safe on margin?", "pause_after_s": 0.6},
+    {"speaker": "Rahul", "text": "Four rupees per extra shipment. That's more than double our cost, and still cheaper than what Trackwise charges for overage.", "pause_after_s": 0.5},
+    {"speaker": "Meera", "text": "Four rupees is fine. Customers accept overage if the dashboard shows it to them before the invoice does.", "pause_after_s": 0.7},
+    {"speaker": "Arjun", "text": "Which means we need a usage meter in the product. Right now we only count shipments in the nightly billing job.", "pause_after_s": 0.8},
+    {"speaker": "Priya", "text": "Okay, let me propose something concrete. Starter at 4,999 rupees a month, fifteen hundred shipments included, and four rupees per shipment after that.", "pause_after_s": 0.7},
+    {"speaker": "Meera", "text": "I still think 4,999 makes the first sales call harder. But with a visible usage meter, I can sell it.", "pause_after_s": 0.5},
+    {"speaker": "Rahul", "text": "I'm comfortable with 4,999. That keeps a busy Starter account at around 46 percent margin.", "pause_after_s": 0.6},
+    {"speaker": "Priya", "text": "Then that's decided. We'll go with the 4,999 rupee Starter tier, with fifteen hundred shipments and four rupee overage.", "pause_after_s": 0.8},
+    {"speaker": "Arjun", "text": "Noted on Starter. And for the Growth tier, are we still holding at 14,999 a month?", "pause_after_s": 0.5},
+    {"speaker": "Priya", "text": "Yes, 14,999 for ten thousand shipments, plus WhatsApp delivery updates and two warehouse locations.", "pause_after_s": 0.6},
+    {"speaker": "Meera", "text": "Monsoon Apparel asked about Growth last week. They run three warehouses, so two locations won't cover them.", "pause_after_s": 0.5},
+    {"speaker": "Priya", "text": "Then Monsoon is an Enterprise conversation. Let's not bend the Growth tier around a single account.", "pause_after_s": 0.6},
+    {"speaker": "Meera", "text": "Fair enough. I'll take Monsoon Apparel through the Enterprise proposal next week instead.", "pause_after_s": 0.9},
+    {"speaker": "Rahul", "text": "Next, annual billing. Meera, you wanted twenty percent off for annual plans, right?", "pause_after_s": 0.5},
+    {"speaker": "Meera", "text": "Twenty percent. Annual prepay is how we get cash up front from small businesses, and twenty is what makes people actually choose it.", "pause_after_s": 0.5},
+    {"speaker": "Rahul", "text": "Twenty is too much. At twenty percent off, the Starter margin gets thin again. I'd cap the annual discount at fifteen.", "pause_after_s": 0.5},
+    {"speaker": "Meera", "text": "Fifteen percent doesn't move anyone. Nobody switches to annual billing for fifteen percent.", "pause_after_s": 0.6},
+    {"speaker": "Rahul", "text": "Our own data says otherwise. Forty percent of the Saffron Basket cohort picked annual billing at only twelve percent off.", "pause_after_s": 0.7},
+    {"speaker": "Arjun", "text": "Is that cohort big enough to trust, though? If I remember right, it was only about thirty accounts.", "pause_after_s": 0.5},
+    {"speaker": "Rahul", "text": "It was 34 accounts. Small, I agree, but it's the only real annual billing data we have so far.", "pause_after_s": 0.8},
+    {"speaker": "Priya", "text": "I'm going to side with Rahul on this one. The annual discount is fifteen percent, and we revisit it after ninety days of real data.", "pause_after_s": 0.6},
+    {"speaker": "Meera", "text": "Okay. I'm not thrilled, but fifteen percent with a review at ninety days is something I can live with.", "pause_after_s": 0.9},
+    {"speaker": "Arjun", "text": "On the build side, the usage meter is the real blocker. Billing can't go live without it, and sales can't demo overage.", "pause_after_s": 0.6},
+    {"speaker": "Priya", "text": "Arjun, can you ship the usage meter by Friday? Almost everything else on the launch plan depends on it.", "pause_after_s": 0.6},
+    {"speaker": "Arjun", "text": "Friday works. I'll have it on staging Thursday night, with a warning banner at ninety percent of the plan limit.", "pause_after_s": 0.7},
+    {"speaker": "Meera", "text": "For sales, I need a revised deck with the new tiers. Saffron Basket's renewal call is on Friday, so I'll send them the revised deck by Thursday.", "pause_after_s": 0.7},
+    {"speaker": "Rahul", "text": "And I'll set up the billing plans in Razorpay by Wednesday: monthly and annual for both Starter and Growth. Enterprise stays on manual invoices.", "pause_after_s": 0.8},
+    {"speaker": "Priya", "text": "Thanks, Rahul. Now the launch date. I want self-serve live on Monday, November second.", "pause_after_s": 0.6},
+    {"speaker": "Arjun", "text": "November second is tight but doable, if the pricing page is final by next week. We need the copy to build the signup flow.", "pause_after_s": 0.5},
+    {"speaker": "Priya", "text": "That one's on me. I'll draft the pricing page and the FAQ by Monday, including worked overage examples.", "pause_after_s": 0.6},
+    {"speaker": "Meera", "text": "Put a real example in the FAQ. Two thousand shipments on Starter comes to 6,999 rupees in total, and people should see that math.", "pause_after_s": 0.6},
+    {"speaker": "Priya", "text": "Good, that example goes in. So we're agreed: self-serve launches on Monday, November second.", "pause_after_s": 0.7},
+    {"speaker": "Rahul", "text": "One risk on that date. GST invoicing through Razorpay needs our new tax registration, and that isn't confirmed yet.", "pause_after_s": 0.5},
+    {"speaker": "Priya", "text": "Rahul, can you chase the tax registration and confirm it either way by next Tuesday?", "pause_after_s": 0.5},
+    {"speaker": "Rahul", "text": "Yes, I'll confirm the GST registration by next Tuesday. If it slips, we launch with manual invoices for the first week.", "pause_after_s": 0.6},
+    {"speaker": "Priya", "text": "Let me recap the decisions. Starter is 4,999 with fifteen hundred shipments, the annual discount is fifteen percent, and we launch on November second.", "pause_after_s": 0.6},
+    {"speaker": "Meera", "text": "And the owners: Arjun has the usage meter by Friday, I have the Saffron Basket deck by Thursday, Rahul has Razorpay by Wednesday and GST by Tuesday, and Priya has the pricing page by Monday.", "pause_after_s": 0.6},
+    {"speaker": "Priya", "text": "That's it. Thanks, everyone, and please use the pricing channel for anything that changes before launch.", "pause_after_s": 0.5}
+  ],
+  "expected": {
+    "decisions": [
+      {"text": "Starter tier at 4,999 rupees a month with 1,500 shipments included and 4 rupees per extra shipment", "by": "Priya"},
+      {"text": "Annual plans get a 15 percent discount (not 20), reviewed after 90 days of data", "by": "Priya"},
+      {"text": "Self-serve launches on Monday, November 2", "by": "Priya"},
+      {"text": "Growth stays at 14,999 rupees for 10,000 shipments; Monsoon Apparel is handled as an Enterprise deal", "by": "Priya"}
+    ],
+    "action_items": [
+      {"owner": "Arjun", "text": "Ship the usage meter (on staging Thursday night, warning banner at 90 percent of the plan limit)", "due": "Friday"},
+      {"owner": "Meera", "text": "Send the revised pricing deck to Saffron Basket before their renewal call", "due": "Thursday"},
+      {"owner": "Rahul", "text": "Set up monthly and annual Starter and Growth plans in Razorpay", "due": "Wednesday"},
+      {"owner": "Priya", "text": "Draft the pricing page and the FAQ, including worked overage examples", "due": "Monday"},
+      {"owner": "Rahul", "text": "Confirm the GST registration either way", "due": "next Tuesday"},
+      {"owner": "Meera", "text": "Take Monsoon Apparel through the Enterprise proposal", "due": "next week"}
+    ],
+    "disagreements": [
+      {"between": ["Meera", "Rahul"], "about": "Starter price: Meera wanted 3,999 to match Trackwise, Rahul said 3,999 with 1,500 shipments is only about 32 percent margin", "resolved_as": "4,999 with overage"},
+      {"between": ["Meera", "Rahul"], "about": "Annual discount: Meera wanted 20 percent, Rahul capped it at 15 percent citing the 34-account Saffron Basket cohort", "resolved_as": "15 percent, review after 90 days (Priya sided with Rahul)"}
+    ],
+    "entities": [
+      {"name": "Kitepost", "kind": "org"},
+      {"name": "Trackwise", "kind": "org"},
+      {"name": "Saffron Basket", "kind": "customer"},
+      {"name": "Monsoon Apparel", "kind": "customer"},
+      {"name": "Razorpay", "kind": "vendor"},
+      {"name": "WhatsApp", "kind": "product"}
+    ],
+    "figures": {
+      "cost_per_shipment_rupees": 1.8,
+      "starter_price_rupees": 4999,
+      "starter_included_shipments": 1500,
+      "overage_rupees_per_shipment": 4,
+      "margin_at_3999_percent": 32,
+      "margin_at_4999_percent": 46,
+      "growth_price_rupees": 14999,
+      "growth_included_shipments": 10000,
+      "annual_discount_percent": 15,
+      "faq_example_2000_shipments_rupees": 6999
+    },
+    "qa": [
+      {"question": "What did Priya commit to in the pricing review?", "answer_should_mention": ["pricing page", "FAQ", "Monday"]},
+      {"question": "And when is that due?", "follow_up": true, "answer_should_mention": ["Monday"]},
+      {"question": "What price did we agree for the Starter tier?", "answer_should_mention": ["4,999", "1,500", "4 rupees"]},
+      {"question": "Who wanted a bigger annual discount, and what did we settle on?", "answer_should_mention": ["Meera", "20", "15", "Rahul"]},
+      {"question": "Who owns the usage meter and when is it due?", "answer_should_mention": ["Arjun", "Friday"]},
+      {"question": "What does a tracked shipment cost us?", "answer_should_mention": ["1.8", "Rahul"]},
+      {"question": "What happens with Monsoon Apparel?", "answer_should_mention": ["Enterprise", "Meera", "three warehouses"]},
+      {"question": "When does self-serve launch, and what could delay it?", "answer_should_mention": ["November", "GST", "Rahul"]}
+    ]
+  }
+}

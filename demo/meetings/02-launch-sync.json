@@ -1,0 +1,89 @@
+{
+  "id": "02-launch-sync",
+  "title": "Self-serve launch sync",
+  "date_hint": "Thursday 15 October 2026, 16:30 IST (two days after the pricing review)",
+  "company": "Kitepost, a Bengaluru B2B logistics SaaS (shipment tracking and delivery updates for small and mid-size shippers)",
+  "follows": "01-pricing-review",
+  "speakers": [
+    {"name": "Priya", "role": "Head of Product", "voice": "hf_alpha", "speed": 1.05},
+    {"name": "Meera", "role": "Sales Lead", "voice": "bf_emma", "speed": 1.0},
+    {"name": "Rahul", "role": "Finance Manager", "voice": "bm_george", "speed": 1.05}
+  ],
+  "turns": [
+    {"speaker": "Priya", "text": "Quick launch sync. Arjun is heads down on the usage meter today, so it's the three of us. Meera, how did the deck land?", "pause_after_s": 0.6},
+    {"speaker": "Meera", "text": "The revised deck went to Saffron Basket yesterday, so that one is done. But their reaction to the Starter price was not great.", "pause_after_s": 0.5},
+    {"speaker": "Rahul", "text": "What did they actually say? Was it the price itself, or the shipment limit that bothered them?", "pause_after_s": 0.5},
+    {"speaker": "Meera", "text": "The price. Trackwise just cut its small-shipper plan from 3,999 to 3,499, so at 4,999 we're over forty percent more expensive.", "pause_after_s": 0.6},
+    {"speaker": "Priya", "text": "Is that just one customer pushing back, or are we hearing the same thing from other accounts?", "pause_after_s": 0.5},
+    {"speaker": "Meera", "text": "Other accounts too. Two of the five trial accounts that signed up this week asked for a price under four thousand.", "pause_after_s": 0.8},
+    {"speaker": "Rahul", "text": "I expected this, so I ran the numbers again last night. If Starter includes one thousand shipments instead of fifteen hundred, 3,999 still works.", "pause_after_s": 0.6},
+    {"speaker": "Priya", "text": "Walk us through it, because on Tuesday you said 3,999 was below your floor.", "pause_after_s": 0.5},
+    {"speaker": "Rahul", "text": "A thousand shipments cost us about eighteen hundred rupees. At 3,999 that's a 55 percent margin, which is better than the 46 percent we accepted on Tuesday.", "pause_after_s": 0.7},
+    {"speaker": "Meera", "text": "And heavy users still pay four rupees per shipment above a thousand, so the busy accounts are covered.", "pause_after_s": 0.6},
+    {"speaker": "Priya", "text": "My worry is that a thousand shipments looks small next to Trackwise. What does their plan include?", "pause_after_s": 0.5},
+    {"speaker": "Meera", "text": "The same thousand shipments. But they charge seven rupees for overage, so above about twelve hundred shipments a month we're the cheaper option.", "pause_after_s": 0.7},
+    {"speaker": "Rahul", "text": "Then I'm fine moving Starter to 3,999 with a thousand shipments. Overage stays at four rupees.", "pause_after_s": 0.6},
+    {"speaker": "Priya", "text": "Okay, let's change it. Starter moves from 4,999 to 3,999 a month, with one thousand shipments included. This replaces what we decided on Tuesday.", "pause_after_s": 0.8},
+    {"speaker": "Meera", "text": "Good. That makes my first calls a lot easier, especially when we're up against Trackwise.", "pause_after_s": 0.5},
+    {"speaker": "Rahul", "text": "The annual discount stays at fifteen percent, though. I don't want to reopen that one.", "pause_after_s": 0.6},
+    {"speaker": "Priya", "text": "Agreed, fifteen percent stands. So what has to change downstream before launch?", "pause_after_s": 0.6},
+    {"speaker": "Rahul", "text": "The Starter plan in Razorpay needs to change. I'll update it to 3,999 with the new shipment limit by Monday.", "pause_after_s": 0.7},
+    {"speaker": "Priya", "text": "And I'm still drafting the pricing page, so it'll go out with 3,999 and the thousand shipment cap. That's still on track for Monday.", "pause_after_s": 0.6},
+    {"speaker": "Meera", "text": "Change the FAQ example as well. Two thousand shipments on the new Starter would be 3,999 plus four thousand, so 7,999 rupees.", "pause_after_s": 0.6},
+    {"speaker": "Priya", "text": "Yes, I'll use that. Someone needs to tell Arjun, because the usage meter warning was set at ninety percent of fifteen hundred.", "pause_after_s": 0.5},
+    {"speaker": "Rahul", "text": "Ninety percent of a thousand is nine hundred. That's a config value, isn't it, not a rebuild?", "pause_after_s": 0.5},
+    {"speaker": "Priya", "text": "It should be config. I'll message Arjun today so the meter warns at nine hundred shipments, and he can still ship it on Friday.", "pause_after_s": 0.7},
+    {"speaker": "Meera", "text": "I'll email Saffron Basket and the two trial accounts with the new Starter price by tomorrow morning, ahead of their renewal call.", "pause_after_s": 0.8},
+    {"speaker": "Priya", "text": "Does the November second launch date still hold with all of these changes?", "pause_after_s": 0.5},
+    {"speaker": "Rahul", "text": "It holds. The GST registration is still pending, but I'll know by Tuesday, as planned.", "pause_after_s": 0.7},
+    {"speaker": "Priya", "text": "Good. So to recap, Starter is now 3,999 a month with a thousand shipments, overage is four rupees, annual stays at fifteen percent, and we launch November second.", "pause_after_s": 0.6},
+    {"speaker": "Meera", "text": "And the Saffron Basket deck is done, with the price update going out to them tomorrow morning.", "pause_after_s": 0.5},
+    {"speaker": "Priya", "text": "Right, that's everything. Thanks, both of you. See you at Monday's standup.", "pause_after_s": 0.5}
+  ],
+  "expected": {
+    "decisions": [
+      {"text": "Starter tier moves from 4,999 to 3,999 rupees a month with 1,000 shipments included (overage stays 4 rupees)", "by": "Priya",
+       "supersedes": "Starter tier at 4,999 rupees a month with 1,500 shipments included and 4 rupees per extra shipment"},
+      {"text": "Annual discount stays at 15 percent", "by": "Rahul", "reaffirms": "Annual plans get a 15 percent discount (not 20), reviewed after 90 days of data"},
+      {"text": "Self-serve launch on November 2 still holds", "by": "Rahul", "reaffirms": "Self-serve launches on Monday, November 2"}
+    ],
+    "action_items": [
+      {"owner": "Rahul", "text": "Update the Starter plan in Razorpay to 3,999 with the 1,000-shipment limit", "due": "Monday"},
+      {"owner": "Priya", "text": "Message Arjun so the usage meter warns at 900 shipments", "due": "today"},
+      {"owner": "Meera", "text": "Email Saffron Basket and the two trial accounts the new Starter price", "due": "tomorrow morning"}
+    ],
+    "completed_from_previous": [
+      {"owner": "Meera", "text": "Send the revised pricing deck to Saffron Basket", "meeting": "01-pricing-review", "reported_by": "Meera"}
+    ],
+    "still_open_from_previous": [
+      {"owner": "Priya", "text": "Draft the pricing page and the FAQ", "due": "Monday", "note": "now with 3,999, the 1,000 cap and a 7,999 FAQ example"},
+      {"owner": "Arjun", "text": "Ship the usage meter", "due": "Friday"},
+      {"owner": "Rahul", "text": "Confirm the GST registration", "due": "Tuesday"}
+    ],
+    "entities": [
+      {"name": "Trackwise", "kind": "org"},
+      {"name": "Saffron Basket", "kind": "customer"},
+      {"name": "Razorpay", "kind": "vendor"}
+    ],
+    "figures": {
+      "starter_price_rupees": 3999,
+      "previous_starter_price_rupees": 4999,
+      "starter_included_shipments": 1000,
+      "trackwise_starter_rupees": 3499,
+      "trackwise_overage_rupees": 7,
+      "margin_new_starter_percent": 55,
+      "breakeven_vs_trackwise_shipments": 1200,
+      "faq_example_2000_shipments_rupees": 7999,
+      "meter_warning_shipments": 900
+    },
+    "qa": [
+      {"question": "What is the Starter price now?", "answer_should_mention": ["3,999", "1,000", "4,999"]},
+      {"question": "Why did we change the Starter price?", "answer_should_mention": ["Trackwise", "3,499", "Saffron Basket"]},
+      {"question": "Did Meera send the revised deck to Saffron Basket?", "answer_should_mention": ["done", "Meera"]},
+      {"question": "What does Meera have to do by tomorrow?", "answer_should_mention": ["Saffron Basket", "trial accounts", "price"]},
+      {"question": "What margin does the new Starter tier make?", "answer_should_mention": ["55", "Rahul"]},
+      {"question": "Is the November second launch still on?", "answer_should_mention": ["yes", "GST", "Tuesday"]},
+      {"question": "What did Priya commit to across both meetings?", "answer_should_mention": ["pricing page", "Monday", "Arjun"]}
+    ]
+  }
+}
