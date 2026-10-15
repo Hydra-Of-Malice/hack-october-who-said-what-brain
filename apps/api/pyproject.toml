@@ -19,6 +19,7 @@ dependencies = [
     "tokenizers>=0.20",
     "huggingface-hub>=0.25",
     "sherpa-onnx>=1.12",
+    "sherpa-onnx-core>=1.12",
     "faster-whisper>=1.0.3",
     "google-genai>=1.0",
 ]
@@ -36,6 +37,10 @@ packages = ["wsw_brain"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "slow: loads EmbeddingGemma ONNX or Whisper models",
+    "live: needs Ollama gemma4:e4b and/or FalkorDB",
+]
 
 [tool.ruff]
 line-length = 110

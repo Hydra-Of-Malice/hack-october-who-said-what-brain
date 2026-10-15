@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=str(REPO_ROOT / ".env"), extra="ignore")
 
     # Storage
-    falkordb_url: str = Field("falkor://localhost:6379", alias="WSW_FALKORDB_URL")
+    falkordb_url: str = Field("falkor://127.0.0.1:6379", alias="WSW_FALKORDB_URL")
     graph: str = Field("wsw_demo", alias="WSW_GRAPH")
     data_dir: Path = Field(REPO_ROOT / "data", alias="WSW_DATA_DIR")
     models_dir: Path = Field(REPO_ROOT / "models", alias="WSW_MODELS_DIR")
