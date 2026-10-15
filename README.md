@@ -115,6 +115,8 @@ Open http://localhost:8000. On first start the two demo meetings are ingested th
 - Development mode with hot reload: `cd apps/web && npm run dev` (port 5173, proxies to :8000).
 - Tests: `cd apps/api && uv run pytest -q`. Use `-m "not live"` to skip the Ollama tests.
 
+**Teammates:** [docs/TEAM_SETUP.md](docs/TEAM_SETUP.md) covers a fresh-machine setup, the dev loop, where code lives and how we work (branches, PRs, rules).
+
 **Deploying the live URL:** see [docs/DEPLOY.md](docs/DEPLOY.md). Options are a Render Blueprint, any Docker host, or a no-account HTTPS tunnel from the laptop.
 
 ## Design
