@@ -41,6 +41,13 @@ powershell -File scripts/share.ps1
 
 `scripts/share.ps1` uses `cloudflared` if it is installed (`winget install Cloudflare.cloudflared`), and otherwise falls back to `ssh -R` through localhost.run. Neither needs an account. The printed `https://…` URL is the one to submit if no cloud deploy is available.
 
+## Who can change what on the public URL
+
+- **Default (no `WSW_ADMIN_TOKEN`).** Judges can do everything: start a live meeting with their own mic, upload, rename speakers, tick action items and ask by voice. The seeded demo meetings can't be ended, deleted or renamed, and new meetings are rate-limited per visitor (`WSW_CREATE_LIMIT`, 30 per 10 min). **This is the recommended setting for judging.**
+- **Locked down (`WSW_ADMIN_TOKEN=<secret>`).** Visitors can only read and ask. To make changes, the operator opens `/api/docs`, runs `POST /api/auth` with the token, and that browser gets a cookie.
+
+Details are in [API_CONTRACT.md, Access](API_CONTRACT.md#access-public-url-safety).
+
 ## Checklist before submitting the URL
 
 - [ ] `/api/health` reports `ok: true`, FalkorDB ok, and the expected Gemma model.

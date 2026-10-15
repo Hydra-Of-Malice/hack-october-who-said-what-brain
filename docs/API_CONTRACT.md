@@ -33,6 +33,24 @@ All JSON shapes (`MeetingSummary`, `Speaker`, `UtteranceOut`, `Decision`, `Actio
 
 Errors: `{"detail": str}` with a 4xx/5xx status.
 
+## Access (public URL safety)
+
+Reading, searching and asking are always open. Changes are limited as follows (see [`api/access.py`](../apps/api/wsw_brain/api/access.py)).
+
+| Setting | Effect |
+|---|---|
+| no `WSW_ADMIN_TOKEN` (default) | Anyone may create meetings, capture, upload, rename speakers and toggle action items. **Demo meetings can't be ended, deleted or have their speakers renamed** |
+| `WSW_ADMIN_TOKEN=<secret>` | Creating, uploading, ending, deleting, renaming and the audio socket need the operator token. Send it in one of three ways: `Authorization: Bearer <token>`, `X-WSW-Token`, or the HttpOnly `wsw_token` cookie, which `POST /api/auth {"token": ...}` sets. `GET /api/auth` returns `{required, operator}` |
+| `WSW_CREATE_LIMIT` (default 30) | New meetings allowed per client address per 10 minutes. The operator is exempt |
+| `WSW_ALLOWED_HOSTS` | Comma-separated Host allowlist (empty means any) |
+
+**Status codes:**
+- `401`: operator token missing or wrong.
+- `403`: a protected demo meeting.
+- `429`: create limit reached, or Gemma is busy with other requests.
+
+The audio socket refuses cross-site origins (close code 1008). When the listener falls too far behind real time, it closes with 1013 ("reconnect in a moment").
+
 ## Server-Sent Events
 
 `GET /api/events?since_id=0&meeting_id=` (`text/event-stream`). Each message:
