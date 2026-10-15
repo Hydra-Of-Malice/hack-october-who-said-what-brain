@@ -9,7 +9,7 @@ interface Props {
   fallbackDuration: number;
 }
 
-/** Transport for a recorded meeting: play/pause, position, the native player, and a download. */
+/** Transport for a recorded meeting: play/pause, position and a download. The speaker lanes are the scrubber. */
 export default function AudioTransport({ src, title, audio, fallbackDuration }: Props) {
   const total = audio.duration || fallbackDuration;
   const fileName = `${title.replace(/[\\/:*?"<>|]+/g, " ").trim() || "meeting"}.wav`;
@@ -33,7 +33,7 @@ export default function AudioTransport({ src, title, audio, fallbackDuration }: 
           Download audio
         </a>
       </div>
-      <audio ref={audio.attach} className="transport-audio" src={src} controls preload="metadata" aria-label="Meeting recording" />
+      <audio ref={audio.attach} className="transport-audio" src={src} preload="metadata" aria-label="Meeting recording" />
       {audio.error && (
         <p className="transport-error" role="alert">
           {audio.error}

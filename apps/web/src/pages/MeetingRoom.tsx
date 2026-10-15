@@ -109,7 +109,9 @@ function RoomReady({ id, room, meeting }: { id: string; room: MeetingRoomApi; me
   const nameOf = useCallback(
     (track: string) => {
       const s = speakerByTrack.get(track);
-      return s ? speakerName(s) : speakerName({ track });
+      if (s) return speakerName(s);
+      // proposed_by / owner may already be a display name ("Priya") rather than a track ("S2")
+      return /^S\d+$/.test(track) ? speakerName({ track }) : track;
     },
     [speakerByTrack],
   );

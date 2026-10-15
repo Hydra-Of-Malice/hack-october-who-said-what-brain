@@ -206,12 +206,17 @@ def insights_from_json(
     existing_decisions: list[dict[str, Any]] | None = None,
 ) -> Insights:
     window = _Window(utterances, speakers)
+    table = _speaker_table(speakers)
     earlier = [d.get("text", "") for d in existing_decisions or [] if d.get("text")]
     earlier_norm = {_norm(t) for t in earlier}
 
+    def readable(raw: Any) -> str:
+        # The prompt's legend maps tracks to names; models still write "S2 will…" sometimes.
+        return re.sub(r"\bS(\d+)\b", lambda m: speaker_display(m.group(0), table), _text(raw))
+
     decisions: list[DecisionDraft] = []
     for item in _dicts(data.get("decisions")):
-        text, evidence = _text(item.get("text")), window.evidence(item.get("evidence"))
+        text, evidence = readable(item.get("text")), window.evidence(item.get("evidence"))
         if not text or not evidence or _norm(text) in earlier_norm:
             continue
         proposer = window.track(item.get("proposed_by")) or window.track_of_utterance.get(evidence[0])
@@ -228,7 +233,7 @@ def insights_from_json(
 
     actions: list[ActionItemDraft] = []
     for item in _dicts(data.get("action_items")):
-        text, evidence = _text(item.get("text")), window.evidence(item.get("evidence"))
+        text, evidence = readable(item.get("text")), window.evidence(item.get("evidence"))
         if not text or not evidence:
             continue
         actions.append(
