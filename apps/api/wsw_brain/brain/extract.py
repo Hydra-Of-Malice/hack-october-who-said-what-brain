@@ -344,7 +344,15 @@ def _match_earlier(raw: Any, earlier: list[str], new_text: str) -> str | None:
     best = max(earlier, key=lambda t: overlap_score(claimed, t))
     if overlap_score(claimed, best) < 0.35 or _norm(best) == _norm(new_text):
         return None
+    # The new decision must be about the same thing: "Self-serve will launch on Monday" does not replace
+    # "The self-serve pricing is locked" (0.33), while "Starter moves from 4999 to 3999" replaces "The
+    # starter tier will be 4,999 with 1500 shipments" (0.5).
+    if overlap_score(new_text, best) < SUPERSEDE_MIN_OVERLAP:
+        return None
     return best
+
+
+SUPERSEDE_MIN_OVERLAP = 0.4
 
 
 def _dicts(raw: Any) -> list[dict[str, Any]]:
