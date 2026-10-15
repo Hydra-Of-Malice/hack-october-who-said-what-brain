@@ -82,7 +82,8 @@ The two demo meetings ([demo/](demo/README.md)) are scripted Kitepost meetings v
 Other measurements:
 - **Live:** utterances appear in FalkorDB during playback. One count query run 12 s apart showed 1 → 5 → 7 utterances mid-stream. A batch write takes about 45 ms. A line lands about 2–3 s after the speaker pauses.
 - **Ask:** about 2 s per answer on the laptop with `gemma4:e4b` (retrieval about 0.2 s). Hearing a spoken question takes another 0.5 s.
-- **Tests:** 110 backend tests (graph, listener, brain, API) pass against live FalkorDB and Ollama.
+- **Tests:** 146 backend tests (graph, listener, brain, API) pass against live FalkorDB and Ollama.
+- **Review:** a multi-lens review (concurrency, graph, listener, agent, web, security) checked every finding with two independent verifiers before fixing it. Fixes include noise-gated voice questions, speaker tracks that survive reconnects, bounded queues, upload caps and demo protection on the public URL.
 
 The voices are synthetic, so these are an upper bound. Real rooms have overlap and noise; see the limitations below.
 
@@ -124,6 +125,10 @@ The UI is built around one idea from recording studios, the multitrack: one lane
 - **Tokens:** everything reads from [`tokens.css`](apps/web/src/styles/tokens.css).
 
 ![Ask by voice: Gemma 4 hears the question and answers with cited moments](docs/img/ask.jpg)
+
+| Meetings, each a tape strip of who spoke when | At 375 px: lanes scroll, the rail becomes a bottom bar |
+|---|---|
+| ![Meetings list](docs/img/meetings.jpg) | ![Mobile meeting room](docs/img/mobile.jpg) |
 
 ## Limitations (honest)
 
