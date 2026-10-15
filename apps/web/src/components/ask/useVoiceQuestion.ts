@@ -18,6 +18,8 @@ export interface VoiceQuestionOptions {
   onNotice: (message: string) => void;
   /** True while an answer is being spoken (raises the VAD threshold so the speakers don't trigger it). */
   speakingRef: RefObject<boolean>;
+  /** True once that answer's audio has actually started (the VAD then learns how loud it is at the mic). */
+  audibleRef: RefObject<boolean>;
 }
 
 export interface VoiceSnapshot {
@@ -200,7 +202,11 @@ class VoiceController {
   private onFrame(frame: Float32Array): void {
     const vad = this.vad;
     if (!vad || !this.snapshot.handsFree) return;
-    vad.boostDb = this.options().speakingRef.current ? SPEAKING_BOOST_DB : 0;
+    const { speakingRef, audibleRef } = this.options();
+    const speaking = !!speakingRef.current;
+    vad.boostDb = speaking ? SPEAKING_BOOST_DB : 0;
+    // Spoken answers bypass the browser's echo canceller; the VAD learns their level so they can't barge in on themselves.
+    vad.setEcho(!speaking ? "off" : audibleRef.current ? "playing" : "pending");
     vad.process(frame);
   }
 

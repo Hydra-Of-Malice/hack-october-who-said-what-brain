@@ -44,16 +44,31 @@ _DONT_KNOW = re.compile(
 _RECORD_TOKEN = re.compile(
     r"[\w.-]+:\S*|(?:action\s+)?(?:item|decision|id)\s*[:#]?\s*[\w.:-]+|[A-Za-z_-]*\d[\w.-]*", re.IGNORECASE
 )
+_COMPLETE_LEAD = r"^\s*(?:(?:ok(?:ay)?|so|then|and|now|please|yes|yeah|can you|could you|would you)[,\s]+)*"
+# Only a whole imperative sentence: "mark it done", "please set the billing page as complete", "close it".
 _COMPLETE_INTENT = re.compile(
-    r"^\s*(?:(?:ok(?:ay)?|so|then|and|now|please|can you|could you)[,\s]+)*"
-    r"(?:mark|set|tick)\b.{0,80}\b(?:done|complete|completed|finished|closed)\b"
-    r"|^\s*(?:(?:please|can you|could you)\s+)?(?:complete|close|finish)\s+(?:it|that|this|the\b)",
+    _COMPLETE_LEAD + r"(?:mark|set|tick)\b.{0,80}?\b(?:done|complete|completed|finished|closed)"
+    r"(?:\s+(?:now|please|then|for me))?[\s.!?]*$"
+    r"|" + _COMPLETE_LEAD + r"(?:complete|close)\s+(?:it|that|this)(?:\s+(?:one|item|task))?"
+    r"(?:\s+(?:now|please))?[\s.!?]*$",
     re.IGNORECASE,
 )
+# Sentences that mention completion without asking for it: negations, reopening, reminders, conditions.
+_NOT_COMPLETION = re.compile(
+    r"\b(?:not|never|no longer|undo|undone|unmark|uncheck|untick|reopen|re-open|(?:back|as|to) open|"
+    r"remind|reminder|reminders|when|whenever|once|if|unless|whether|loop|yet)\b|n['’]t\b",
+    re.IGNORECASE,
+)
+# Words in a completion request that say nothing about which item is meant.
+_ITEM_FILLER = frozenset({
+    "action", "item", "items", "task", "tasks", "todo", "mark", "done", "complete", "completed",
+    "finished", "closed",
+})  # fmt: skip
 _COMPLETE_FILLER = frozenset({
-    "ok", "okay", "so", "then", "and", "now", "please", "can", "could", "you", "mark", "set", "tick",
-    "check", "off", "as", "done", "complete", "completed", "finished", "closed", "close", "finish", "it",
-    "that", "this", "the", "action", "item", "items", "task", "one",
+    "ok", "okay", "so", "then", "and", "now", "please", "can", "could", "would", "you", "yes", "yeah",
+    "mark", "set", "tick", "check", "off", "as", "to", "for", "me", "done", "complete", "completed",
+    "finished", "closed", "close", "finish", "it", "that", "this", "the", "action", "item", "items", "task",
+    "one",
 })  # fmt: skip
 _QUESTION_WORDS = frozenset({
     "what", "when", "who", "whom", "where", "why", "how", "which", "is", "are", "was", "were", "did", "does",
@@ -291,7 +306,7 @@ def completion_request(question: str) -> str | None:
     # sentence, and names the item ("pricing page") in the first.
     sentences = re.split(r"(?<=[.?!;])\s+", question.strip())
     for i, sentence in enumerate(sentences):
-        if not _COMPLETE_INTENT.search(sentence):
+        if not _COMPLETE_INTENT.search(sentence) or _NOT_COMPLETION.search(sentence):
             continue
         words = re.findall(r"[A-Za-z0-9']+", sentence)
         description = " ".join(w for w in words if w.lower() not in _COMPLETE_FILLER)
@@ -619,15 +634,22 @@ class VoiceAgent:
                 ]
                 lines.append(
                     f"- item {i.get('id')}: {i.get('text')} ({', '.join(x for x in extras if x)}) "
-                    f"[u:{(i.get('evidence') or [''])[0]}]"
+                    f"[u:{self._pool_id(i, turn)}]"
                 )
         if decisions:
             lines.append("Decisions linked to this evidence:")
             lines += [
-                f"- {d.get('text')} ({d.get('status') or 'active'}) [u:{(d.get('evidence') or [''])[0]}]"
+                f"- {d.get('text')} ({d.get('status') or 'active'}) [u:{self._pool_id(d, turn)}]"
                 for d in decisions
             ]
         return "\n".join(lines)
+
+    @staticmethod
+    def _pool_id(record: dict[str, Any], turn: _Turn) -> str:
+        """The record's evidence id to show the model: one already in this turn's evidence (the one that
+        linked it), so citing it survives resolve_citations; the store's first id otherwise."""
+        evidence = record.get("evidence") or []
+        return next((e for e in evidence if e in turn.evidence), evidence[0] if evidence else "")
 
     async def _context_windows(self, turn: _Turn, anchors: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -736,8 +758,14 @@ class VoiceAgent:
         item_id, description = _arg(args, "item_id"), _arg(args, "description")
         items = await self._store(turn, self.store.list_action_items) or []
         target = next((i for i in items if item_id and i.get("id") == item_id), None)
+        candidates: list[dict[str, Any]] = []
         if target is None:
-            target = self._match_item(items, description or item_id, turn)
+            target, candidates = self._match_item(items, description or item_id, turn)
+        if target is None and candidates:
+            return {
+                "error": "several action items match equally well; nothing changed. Ask the user which one",
+                "candidates": [self._compact_item(i) for i in candidates[:4]],
+            }, 0
         if target is None:
             open_items = [self._compact_item(i) for i in items if i.get("status") == "open"][:6]
             return {"error": "no open action item matches", "open_items": open_items}, 0
@@ -760,7 +788,8 @@ class VoiceAgent:
     async def _t_list_decisions(self, turn: _Turn, args: dict[str, Any]) -> tuple[Any, int]:
         meeting_id = await self._resolve_meeting(turn, _arg(args, "meeting_id")) or turn.meeting_id
         decisions = (await self._store(turn, self.store.list_decisions, meeting_id) or [])[:10]
-        await self._join_evidence_ids(turn, [d.get("evidence") or [] for d in decisions])
+        # Fetch every id the result shows, so the model can cite any of them.
+        await self._join_evidence_ids(turn, [d.get("evidence") or [] for d in decisions], per_record=2)
         rows = [
             {
                 "id": d.get("id"),
@@ -803,17 +832,20 @@ class VoiceAgent:
         if not detail:
             return {"error": f"meeting {meeting_id} not found"}, 0
         meeting = detail.get("meeting") or {}
-        decisions = [d for d in detail.get("decisions", []) if d.get("status") != "superseded"]
-        items = detail.get("action_items", [])
+        decisions = [d for d in detail.get("decisions", []) if d.get("status") != "superseded"][:5]
+        items = detail.get("action_items", [])[:6]
+        # Show an evidence id with every record and fetch exactly those, so each one shown can be cited.
         await self._join_evidence_ids(
-            turn,
-            [d.get("evidence") or [] for d in decisions[:3]] + [i.get("evidence") or [] for i in items[:3]],
+            turn, [d.get("evidence") or [] for d in decisions] + [i.get("evidence") or [] for i in items]
         )
         result: dict[str, Any] = {
             "meeting": meeting.get("title"),
             "meeting_id": meeting_id,
-            "decisions": [d.get("text") for d in decisions[:5]],
-            "action_items": [self._compact_item(i) for i in items[:6]],
+            "decisions": [
+                {"text": d.get("text"), "evidence": f"u:{d['evidence'][0]}" if d.get("evidence") else None}
+                for d in decisions
+            ],
+            "action_items": [self._compact_item(i) for i in items],
         }
         if meeting.get("summary"):
             result["summary"] = meeting["summary"]
@@ -907,26 +939,49 @@ class VoiceAgent:
 
     def _match_item(
         self, items: list[dict[str, Any]], description: str | None, turn: _Turn
-    ) -> dict[str, Any] | None:
-        open_items = [i for i in items if i.get("status") == "open"]
-        wanted = content_words(description or "")
-        if wanted:
-            best, best_score = None, 0.0
-            for item in open_items:
-                words = content_words(f"{item.get('text', '')} {item.get('owner') or ''}")
-                score = len(wanted & words) / len(wanted)
-                if score > best_score:
-                    best, best_score = item, score
-            return best if best is not None and best_score >= 0.34 else None
-        # "mark it done" with no description: the open item evidenced by this conversation's evidence
-        linked = self._conversation_items(open_items, turn)
-        return linked[0] if linked else None
+    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        """The item a completion request describes: (item, []), (None, []) when nothing fits, or (None,
+        candidates) when several fit equally well. Done items are candidates too, so an item that is
+        already done is reported as such instead of a weaker open match being completed. Ties go to the
+        item this conversation is about, then to the current meeting, then to an open item."""
+        wanted = content_words(description or "") - _ITEM_FILLER
+        if not wanted:
+            # "mark it done" with no description: the open item evidenced by this conversation's evidence
+            linked = self._conversation_items([i for i in items if i.get("status") == "open"], turn)
+            return (linked[0] if linked else None), []
+        # One or two words must all match ("pricing deck" never lands on "pricing page"); longer
+        # descriptions need half their words.
+        needed = 1.0 if len(wanted) <= 2 else 0.5
+        linked_rank = {
+            r.get("id"): n for n, r in enumerate(self._conversation_items(items, turn, status=None))
+        }
+        scored: list[tuple[tuple[float, int, bool, bool], dict[str, Any]]] = []
+        for item in items:
+            words = content_words(f"{item.get('text', '')} {item.get('owner') or ''}")
+            score = len(wanted & words) / len(wanted)
+            if score >= needed:
+                key = (
+                    score,
+                    -linked_rank.get(item.get("id"), len(items) + 1),
+                    bool(turn.meeting_id) and item.get("meeting_id") == turn.meeting_id,
+                    item.get("status") != "done",
+                )
+                scored.append((key, item))
+        if not scored:
+            return None, []
+        scored.sort(key=lambda s: s[0], reverse=True)
+        best_key = scored[0][0]
+        tied = [item for key, item in scored if key == best_key]
+        return (tied[0], []) if len(tied) == 1 else (None, tied)
 
     async def _join_item_evidence(self, turn: _Turn, items: list[dict[str, Any]]) -> None:
         await self._join_evidence_ids(turn, [i.get("evidence") or [] for i in items])
 
-    async def _join_evidence_ids(self, turn: _Turn, groups: list[list[str | None]]) -> None:
-        ids = [g[0] for g in groups if g and g[0]]
+    async def _join_evidence_ids(
+        self, turn: _Turn, groups: list[list[str | None]], per_record: int = 1
+    ) -> None:
+        """Fetch the first `per_record` evidence ids of each record (the ids the tool result shows)."""
+        ids = [uid for g in groups for uid in g[:per_record] if uid]
         hits = await self._fetch_utterances(turn, ids)
         turn.add_evidence(hits, from_tool=True)
 

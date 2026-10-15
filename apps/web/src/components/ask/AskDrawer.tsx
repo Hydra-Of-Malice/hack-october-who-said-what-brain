@@ -70,6 +70,7 @@ export default function AskDrawer() {
   const openRef = useRef(open);
   const speakOnRef = useRef(speakOn);
   const speakingRef = useRef(false);
+  const audibleRef = useRef(false);
   const sessionRef = useRef(session.id);
   const inflight = useRef<AbortController | null>(null);
   const clips = useRef(new Map<string, Blob>());
@@ -109,13 +110,19 @@ export default function AskDrawer() {
   const stopSpeech = useCallback(() => {
     stopSpeaking();
     speakingRef.current = false;
+    audibleRef.current = false;
     setSpeaking(false);
   }, []);
 
   const speakAnswer = useCallback((text: string) => {
+    audibleRef.current = false;
     const started = speak(text, {
+      onStart: () => {
+        audibleRef.current = true;
+      },
       onEnd: () => {
         speakingRef.current = false;
+        audibleRef.current = false;
         setSpeaking(false);
       },
     });
@@ -263,6 +270,7 @@ export default function AskDrawer() {
     },
     onNotice: setNotice,
     speakingRef,
+    audibleRef,
   });
   const { shutdown: shutdownVoice } = voice;
 

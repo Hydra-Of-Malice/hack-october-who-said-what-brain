@@ -100,9 +100,12 @@ class Services:
             time.perf_counter() - t0,
         )
         services = cls(cfg, store, bus, embedder, llm, audio_llm, loop, disconnect_grace_s=disconnect_grace_s)
-        if await asyncio.to_thread(services.ensure_graph):
+        graph_ready = await asyncio.to_thread(services.ensure_graph)
+        if graph_ready:
             log.info("FalkorDB graph '%s' ready at %s", cfg.graph, store.url)
         services.pipeline.start(loop)
+        if graph_ready:
+            await services.end_interrupted_uploads()
         if cfg.seed_demo:
             services.files.start_demo_seed()
         return services
@@ -164,6 +167,10 @@ class Services:
     def recording_path(self, meeting_id: str) -> Path:
         return self.settings.audio_dir / f"{meeting_id}.wav"
 
+    def speaker_state_path(self, meeting_id: str) -> Path:
+        """The live meeting's speaker tracks, so every listener session of it numbers voices the same way."""
+        return self.settings.audio_dir / f"{meeting_id}.speakers.json"
+
     def meeting_summary(self, meeting_id: str) -> dict[str, Any] | None:
         return next((m for m in self.store.list_meetings() if m["id"] == meeting_id), None)
 
@@ -208,6 +215,30 @@ class Services:
             meeting_id, max(known) if known else None, wait_final=wait_final, ended_at_ms=ended_at_ms
         )
 
+    async def end_interrupted_uploads(self) -> None:
+        """An upload whose processing was cut short (server stopped or crashed) stays live with nothing to
+        feed it, and an upload cannot resume: end it with what was transcribed. Microphone meetings stay
+        live (their socket can reconnect); interrupted demo meetings are redone by the demo seed."""
+        try:
+            meetings = await asyncio.to_thread(self.store.list_meetings)
+        except GraphError as exc:
+            log.warning("could not look for interrupted uploads: %s", exc)
+            return
+        for meeting in meetings:
+            mid = meeting["id"]
+            if meeting["source"] != "upload" or meeting["status"] != "live" or self.files.busy(mid):
+                continue
+            log.info("upload %s was interrupted before it finished; ending it with what was transcribed", mid)
+            self.pipeline.status(
+                mid,
+                "error",
+                {"detail": "processing stopped when the server restarted; kept what was transcribed"},
+            )
+            try:
+                await self.pipeline.end_meeting(mid)
+            except GraphError as exc:
+                log.warning("could not end the interrupted upload %s: %s", mid, exc)
+
     async def delete_meeting(self, meeting_id: str) -> bool:
         self.files.cancel(meeting_id)
         await self.captures.release(meeting_id)
@@ -215,7 +246,8 @@ class Services:
         await asyncio.to_thread(self.pipeline.flush)  # a batch being written right now finishes first
         deleted = await asyncio.to_thread(self.store.delete_meeting, meeting_id)
         if MEETING_ID_RE.match(meeting_id):
-            for path in [self.recording_path(meeting_id), *self.uploads_dir.glob(f"{meeting_id}.*")]:
+            leftovers = [self.recording_path(meeting_id), self.speaker_state_path(meeting_id)]
+            for path in [*leftovers, *self.uploads_dir.glob(f"{meeting_id}.*")]:
                 _unlink(path)
         return deleted
 

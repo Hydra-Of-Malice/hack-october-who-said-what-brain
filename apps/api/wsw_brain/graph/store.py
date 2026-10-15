@@ -386,6 +386,8 @@ class GraphStore:
             dst_name = refs[dst].name if dst in refs else None
             if src_name and not dst_name:  # dst inherits the name (and Person) the user gave src
                 self._apply_name(meeting_id, dst, src_name)
+            elif dst_name:  # src's items the transcript gave to another name go back to that name
+                self._sync_owners(meeting_id, dst, dst_name)
             self._query(cq.DELETE_SPEAKER, {"speaker_id": src_id})
             self._query(cq.delete_orphans("Person"))
         return int(moved[0]["moved"]) if moved else 0
@@ -412,12 +414,18 @@ class GraphStore:
         named = self._query(cq.NAME_SPEAKER, {"speaker_id": sid, "name": name, "person_id": person_id(name)})
         if not named:
             return False
-        # Items owned by this name (but no track) now belong to the speaker; then every item on the track
-        # shows the speaker's name.
-        self._query(cq.ASSIGN_NAMED_OWNERS, {"meeting_id": meeting_id, "track": track, "speaker_id": sid,
-                                             "lowered_name": name.lower()})
-        self._query(cq.RENAME_TRACK_OWNERS, {"meeting_id": meeting_id, "track": track, "name": name})
+        self._sync_owners(meeting_id, track, name)
         return True
+
+    def _sync_owners(self, meeting_id: str, track: str, name: str) -> None:
+        """Items the transcript gave to a different name leave the track (a corrected speaker name hands
+        them back); items owned by this name (but no track) now belong to the speaker; then every item on
+        the track shows the speaker's name."""
+        params = {"meeting_id": meeting_id, "track": track, "speaker_id": speaker_id(meeting_id, track),
+                  "name": name, "lowered_name": name.lower()}
+        self._query(cq.RELEASE_NAMED_OWNERS, params)
+        self._query(cq.ASSIGN_NAMED_OWNERS, params)
+        self._query(cq.RENAME_TRACK_OWNERS, params)
 
     def write_insights(self, meeting_id: str, insights: Insights) -> dict[str, list[dict[str, Any]]]:
         """Write decisions, action items, topics, entities, MENTIONS edges. Dedupe by normalised text per
@@ -551,10 +559,11 @@ class GraphStore:
             aid = f"{meeting_id}:a-{short_hash(key)}"
             if any(r["id"] == aid for r in rows):
                 continue
-            owner_name, owner_track, owner_sid = _resolve_owner(draft.owner, speakers, persons)
+            owner_name, owner_track, owner_sid, owner_said = _resolve_owner(draft.owner, speakers, persons)
             due = " ".join((draft.due or "").split()) or None
             rows.append({"id": aid, "meeting_id": meeting_id, "text": text, "created_at": now,
-                         "owner_name": owner_name, "owner_track": owner_track, "due": due})
+                         "owner_name": owner_name, "owner_track": owner_track, "owner_said": owner_said,
+                         "due": due})
             evidence_pairs += [{"src": aid, "dst": e} for e in dict.fromkeys(draft.evidence or []) if e in evidence]
             if owner_sid:
                 assignee_pairs.append({"src": aid, "dst": owner_sid})
@@ -1040,18 +1049,22 @@ def _resolve_speaker(value: str | None, speakers: dict[str, _SpeakerRef]) -> _Sp
 
 
 def _resolve_owner(value: str | None, speakers: dict[str, _SpeakerRef],
-                   persons: dict[str, str]) -> tuple[str | None, str | None, str | None]:
-    """(owner_name, owner_track, speaker node id) for an ActionItemDraft.owner."""
+                   persons: dict[str, str]) -> tuple[str | None, str | None, str | None, str | None]:
+    """(owner_name, owner_track, speaker node id, owner_said) for an ActionItemDraft.owner. owner_said is
+    the name the transcript gave (None for a track or speaker label), kept so a corrected speaker name can
+    hand the item back to that name."""
     if not value or not value.strip():
-        return None, None, None
+        return None, None, None, None
+    clean = " ".join(value.split())
     ref = _resolve_speaker(value, speakers)
     if ref:
-        return ref.name, ref.track, ref.id
+        by_name = ref.name is not None and not parse_track(value) and ref.name.lower() == clean.lower()
+        return ref.name, ref.track, ref.id, ref.name if by_name else None
     track = parse_track(value)
     if track:  # a track this meeting has not produced yet
-        return None, track, None
-    clean = " ".join(value.split())
-    return persons.get(person_id(clean)) or clean, None, None
+        return None, track, None, None
+    name = persons.get(person_id(clean)) or clean
+    return name, None, None, name
 
 
 def _fallback_name(value: str | None) -> str | None:

@@ -26,6 +26,9 @@ export interface VadHandlers {
   onMisfire?: (voicedMs: number) => void;
 }
 
+/** An answer being spoken aloud: "pending" is queued but not heard yet, "playing" has started. */
+export type EchoState = "off" | "pending" | "playing";
+
 const DEFAULTS = {
   frameMs: 20,
   startMs: 150,
@@ -40,6 +43,22 @@ const HYSTERESIS_DB = 3;
 const CALIBRATION_FRAMES = 12;
 const FLOOR_MIN_DB = -90;
 const FLOOR_MAX_DB = -20;
+
+// Spoken answers play through the OS speech engine, so the browser's echo canceller never removes them.
+// While one plays, learn how loud it is at the mic and only accept speech that stands clear of it.
+const ECHO_LEARN_MS = 400; // listen to the answer this long after it starts before anything can interrupt it
+const ECHO_PENDING_MAX_MS = 2000; // the engine never said it started: assume it has by now
+const ECHO_MARGIN_DB = 6; // interrupting speech must be this much louder than the answer's peaks
+const ECHO_START_MS = 200; // and last this long, while the answer is audible
+const ECHO_PERCENTILE = 0.9;
+
+interface EchoGuard {
+  phase: "pending" | "learning" | "guarding";
+  ms: number;
+  levels: number[];
+  /** The answer's level at the mic (a high percentile, so its peaks don't count as speech). */
+  db: number;
+}
 
 /** RMS level of a block in dBFS (silence is about -100). */
 export function levelDb(block: Float32Array, from = 0, to = block.length): number {
@@ -60,6 +79,8 @@ export class EnergyVad {
   private aboveMs = 0;
   private belowMs = 0;
   private speechMs = 0;
+  private echoState: EchoState = "off";
+  private echo: EchoGuard | null = null;
   /** Extra dB added to the threshold, e.g. while the answer is being spoken aloud (self-trigger guard). */
   boostDb = 0;
 
@@ -80,7 +101,19 @@ export class EnergyVad {
 
   /** Current speech threshold in dBFS. */
   get thresholdDb(): number {
+    const base = this.baseThresholdDb;
+    return this.echo?.phase === "guarding" ? Math.max(base, this.echo.db + ECHO_MARGIN_DB) : base;
+  }
+
+  private get baseThresholdDb(): number {
     return Math.max(this.floorDb + this.opts.marginDb, this.opts.absoluteMinDb) + this.boostDb;
+  }
+
+  /** Tell the VAD whether an answer is being spoken aloud (call as often as you like; changes restart the guard). */
+  setEcho(state: EchoState): void {
+    if (state === this.echoState) return;
+    this.echoState = state;
+    this.echo = state === "off" ? null : { phase: state === "pending" ? "pending" : "learning", ms: 0, levels: [], db: this.floorDb };
   }
 
   process(samples: Float32Array): void {
@@ -115,12 +148,20 @@ export class EnergyVad {
       this.calibrated++;
       return;
     }
+    const echo = this.echo;
+    if (echo) this.stepEcho(echo, db);
+    if (!this.inSpeech && echo && echo.phase !== "guarding") {
+      // The answer is about to play or has only just started: nothing interrupts it until we know how loud it is here.
+      this.aboveMs = 0;
+      return;
+    }
     const threshold = this.thresholdDb;
 
     if (!this.inSpeech) {
+      const audibleEcho = !!echo && echo.db + ECHO_MARGIN_DB > this.baseThresholdDb;
       if (db > threshold) {
         this.aboveMs += frameMs;
-        if (this.aboveMs >= startMs) {
+        if (this.aboveMs >= (audibleEcho ? Math.max(startMs, ECHO_START_MS) : startMs)) {
           this.inSpeech = true;
           this.speechMs = this.aboveMs;
           this.belowMs = 0;
@@ -128,7 +169,9 @@ export class EnergyVad {
         }
       } else {
         this.aboveMs = 0;
-        this.adaptFloor(db, false);
+        // Track the answer's level while it plays; keep the room's floor for when it stops.
+        if (echo) echo.db += (db - echo.db) * (db > echo.db ? 0.1 : 0.002);
+        else this.adaptFloor(db, false);
       }
       return;
     }
@@ -150,6 +193,23 @@ export class EnergyVad {
       if (voiced >= minSpeechMs) this.handlers.onSpeechEnd?.(voiced);
       else this.handlers.onMisfire?.(voiced);
     }
+  }
+
+  private stepEcho(echo: EchoGuard, db: number): void {
+    echo.ms += this.opts.frameMs;
+    if (echo.phase === "pending" && echo.ms >= ECHO_PENDING_MAX_MS) {
+      echo.phase = "learning";
+      echo.ms = this.opts.frameMs;
+    }
+    if (echo.phase !== "learning") return;
+    if (echo.ms <= ECHO_LEARN_MS) {
+      echo.levels.push(db);
+      return;
+    }
+    const sorted = echo.levels.sort((a, b) => a - b);
+    if (sorted.length) echo.db = sorted[Math.floor(ECHO_PERCENTILE * (sorted.length - 1))];
+    echo.levels = [];
+    echo.phase = "guarding";
   }
 
   private adaptFloor(db: number, duringSpeech: boolean): void {

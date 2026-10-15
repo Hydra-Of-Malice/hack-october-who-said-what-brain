@@ -196,10 +196,24 @@ MATCH (a:ActionItem {meeting_id: $meeting_id, owner_track: $track})
 SET a.owner_name = $name
 """
 
+# Items the transcript gave to a name (a.owner_said) leave the track when its new name is not that person
+# any more: "Priya" stays with "Priya Sharma", but goes back to being owned by the name "Priya" when the
+# track is renamed "Arjun".
+RELEASE_NAMED_OWNERS = """
+MATCH (a:ActionItem {meeting_id: $meeting_id, owner_track: $track})
+WHERE a.owner_said IS NOT NULL AND toLower(a.owner_said) <> $lowered_name
+  AND NOT ($lowered_name STARTS WITH (toLower(a.owner_said) + ' '))
+  AND NOT (toLower(a.owner_said) STARTS WITH ($lowered_name + ' '))
+SET a.owner_track = null, a.owner_name = a.owner_said
+WITH a
+OPTIONAL MATCH (a)-[r:ASSIGNED_TO]->(:Speaker {id: $speaker_id})
+DELETE r
+"""
+
 ASSIGN_NAMED_OWNERS = """
 MATCH (a:ActionItem {meeting_id: $meeting_id})
 WHERE a.owner_track IS NULL AND toLower(a.owner_name) = $lowered_name
-SET a.owner_track = $track
+SET a.owner_track = $track, a.owner_said = coalesce(a.owner_said, a.owner_name)
 WITH a
 MATCH (s:Speaker {id: $speaker_id})
 MERGE (a)-[:ASSIGNED_TO]->(s)
@@ -417,7 +431,8 @@ UPSERT_ACTION_ITEMS = """
 UNWIND $rows AS r
 MERGE (a:ActionItem {id: r.id})
 ON CREATE SET a.meeting_id = r.meeting_id, a.text = r.text, a.status = 'open', a.created_at = r.created_at,
-              a.owner_name = r.owner_name, a.owner_track = r.owner_track, a.due = r.due
+              a.owner_name = r.owner_name, a.owner_track = r.owner_track, a.owner_said = r.owner_said,
+              a.due = r.due
 ON MATCH SET a.due = coalesce(a.due, r.due)
 WITH a, r
 MATCH (m:Meeting {id: r.meeting_id})

@@ -8,12 +8,13 @@ import re
 from pathlib import Path
 from typing import Annotated, Any, BinaryIO, Literal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 
 from ..brand import brand
 from ..listen import get_asr
-from .schemas import CreateMeeting, NameSpeaker, SetActionStatus
+from .access import TOKEN_COOKIE, TOKEN_COOKIE_MAX_AGE_S, Access
+from .schemas import CreateMeeting, NameSpeaker, SetActionStatus, SignIn
 from .services import MEETING_ID_RE, Services, new_meeting_id
 
 router = APIRouter(prefix="/api")
@@ -42,8 +43,33 @@ def get_services(request: Request) -> Services:
 ServicesDep = Annotated[Services, Depends(get_services)]
 
 
+def get_access(request: Request) -> Access:
+    return request.app.state.access
+
+
+AccessDep = Annotated[Access, Depends(get_access)]
+
+
+def require_operator(request: Request, access: AccessDep) -> None:
+    access.check_operator(request)
+
+
+def count_new_meeting(request: Request, access: AccessDep) -> None:
+    access.check_create(request)
+
+
+OPERATOR = [Depends(require_operator)]  # every change; a no-op unless WSW_ADMIN_TOKEN is set
+NEW_MEETING = [*OPERATOR, Depends(count_new_meeting)]
+
+
 def _not_found(what: str) -> HTTPException:
     return HTTPException(status_code=404, detail=f"{what} not found")
+
+
+async def _check_meeting_change(
+    request: Request, access: Access, services: Services, meeting_id: str
+) -> None:
+    access.check_meeting_change(request, await asyncio.to_thread(services.meeting_summary, meeting_id))
 
 
 # ---- service info --------------------------------------------------------------------------------------------
@@ -75,6 +101,29 @@ def get_brand() -> dict[str, str]:
     return brand()
 
 
+@router.get("/auth")
+def auth_status(request: Request, access: AccessDep) -> dict[str, bool]:
+    return {"required": access.required, "operator": access.is_operator(request)}
+
+
+@router.post("/auth")
+def sign_in(body: SignIn, request: Request, response: Response, access: AccessDep) -> dict[str, bool]:
+    """Exchange the operator token (WSW_ADMIN_TOKEN) for an HttpOnly cookie, so this browser may make changes."""
+    if not access.required:
+        return {"required": False, "operator": False}
+    if not access.token_matches(body.token):
+        raise HTTPException(status_code=401, detail="that is not the operator token")
+    response.set_cookie(
+        TOKEN_COOKIE,
+        body.token.strip(),
+        max_age=TOKEN_COOKIE_MAX_AGE_S,
+        httponly=True,
+        samesite="strict",
+        secure=request.url.scheme == "https",
+    )
+    return {"required": True, "operator": True}
+
+
 @router.get("/stats")
 def stats(services: ServicesDep) -> dict[str, int]:
     return services.store.stats()
@@ -86,12 +135,12 @@ def list_meetings(services: ServicesDep) -> list[dict[str, Any]]:
     return services.store.list_meetings()
 
 
-@router.post("/meetings")
+@router.post("/meetings", dependencies=NEW_MEETING)
 def create_meeting(body: CreateMeeting, services: ServicesDep) -> dict[str, Any]:
     return services.new_meeting(body.title, "mic")
 
 
-@router.post("/meetings/upload")
+@router.post("/meetings/upload", dependencies=NEW_MEETING)
 async def upload_meeting(
     services: ServicesDep,
     file: Annotated[UploadFile, File(description="wav, mp3, m4a, webm or ogg")],
@@ -122,16 +171,22 @@ def get_meeting(meeting_id: str, services: ServicesDep) -> dict[str, Any]:
     return detail
 
 
-@router.post("/meetings/{meeting_id}/end")
-async def end_meeting(meeting_id: str, services: ServicesDep) -> dict[str, Any]:
+@router.post("/meetings/{meeting_id}/end", dependencies=OPERATOR)
+async def end_meeting(
+    meeting_id: str, request: Request, services: ServicesDep, access: AccessDep
+) -> dict[str, Any]:
+    await _check_meeting_change(request, access, services, meeting_id)
     meeting = await services.end_meeting(meeting_id)
     if meeting is None:
         raise _not_found(f"meeting {meeting_id}")
     return meeting
 
 
-@router.delete("/meetings/{meeting_id}")
-async def delete_meeting(meeting_id: str, services: ServicesDep) -> dict[str, bool]:
+@router.delete("/meetings/{meeting_id}", dependencies=OPERATOR)
+async def delete_meeting(
+    meeting_id: str, request: Request, services: ServicesDep, access: AccessDep
+) -> dict[str, bool]:
+    await _check_meeting_change(request, access, services, meeting_id)
     return {"deleted": await services.delete_meeting(meeting_id)}
 
 
@@ -155,8 +210,11 @@ def utterances_after(
     return utterances
 
 
-@router.patch("/meetings/{meeting_id}/speakers/{track}")
-def name_speaker(meeting_id: str, track: str, body: NameSpeaker, services: ServicesDep) -> dict[str, Any]:
+@router.patch("/meetings/{meeting_id}/speakers/{track}", dependencies=OPERATOR)
+def name_speaker(
+    meeting_id: str, track: str, body: NameSpeaker, request: Request, services: ServicesDep, access: AccessDep
+) -> dict[str, Any]:
+    access.check_meeting_change(request, services.meeting_summary(meeting_id))
     try:
         return services.name_speaker(meeting_id, track, body.name)
     except LookupError as exc:
@@ -183,7 +241,7 @@ def list_action_items(
     )
 
 
-@router.patch("/action-items/{item_id}")
+@router.patch("/action-items/{item_id}", dependencies=OPERATOR)
 def set_action_item(item_id: str, body: SetActionStatus, services: ServicesDep) -> dict[str, Any]:
     item = services.store.set_action_item_status(item_id, body.status)
     if item is None:

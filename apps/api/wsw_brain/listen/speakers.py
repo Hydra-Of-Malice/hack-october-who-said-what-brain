@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import re
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -71,10 +74,14 @@ class OnlineClusterer:
     - best cosine similarity >= threshold: join that track and update its centroid;
     - below threshold: open a new track (until max_speakers; then the closest track takes it);
     - a short segment (< short_s) that matches nothing inherits the previous speaker, because short
-      clips give noisy embeddings and turn-taking makes "same as before" the better prior;
+      clips give noisy embeddings and turn-taking makes "same as before" the better prior. So does a
+      segment shorter than confirm_s whose best match is only just below the threshold (within
+      open_margin): a brief interjection ("Sure.") gives a noisy embedding, and a track opened from one
+      rarely gets close enough to its speaker's real track for merge_close() to fold it back;
     - `merge_close()` folds tracks whose centroids converged (sim > merge_threshold) into the older one.
 
-    Tracks are numbered by first appearance and numbers are never reused after a merge.
+    Tracks are numbered by first appearance and numbers are never reused after a merge. `state()` and
+    `restore()` carry the tracks over to a later session of the same meeting (a reconnecting microphone).
     """
 
     INHERIT_CONFIDENCE = 0.35
@@ -86,6 +93,8 @@ class OnlineClusterer:
         merge_threshold: float | None = None,
         *,
         short_s: float = 0.8,
+        confirm_s: float = 2.0,
+        open_margin: float = 0.15,
         max_weight_s: float = 10.0,
     ) -> None:
         if not -1.0 < threshold < 1.0:
@@ -96,6 +105,8 @@ class OnlineClusterer:
         self.max_speakers = max_speakers
         self.merge_threshold = min(0.99, threshold + 0.15) if merge_threshold is None else merge_threshold
         self.short_s = short_s
+        self.confirm_s = confirm_s
+        self.open_margin = open_margin
         self.max_weight_s = max_weight_s
         self._tracks: dict[str, _Track] = {}
         self._aliases: dict[str, str] = {}  # merged-away track -> track it was merged into
@@ -132,6 +143,16 @@ class OnlineClusterer:
         track = max(sims, key=sims.__getitem__)
         return track, sims[track]
 
+    def tentative(self, best_sim: float, duration_s: float) -> bool:
+        """True when a segment matches no track but is too little evidence to open a new one: shorter
+        than short_s, or shorter than confirm_s and only just below the threshold. Such a segment
+        belongs to a neighbouring speaker rather than to a new voice."""
+        if best_sim >= self.threshold:
+            return False
+        if duration_s < self.short_s:
+            return True
+        return duration_s < self.confirm_s and best_sim >= self.threshold - self.open_margin
+
     def choose(self, embedding: np.ndarray | None, candidates: list[str]) -> tuple[str, float]:
         """Pick the closest of `candidates` without updating any centroid (for short, ambiguous
         segments resolved by their neighbours). Without an embedding the first candidate wins."""
@@ -157,7 +178,7 @@ class OnlineClusterer:
             runner_up = ranked[1][1] if len(ranked) > 1 else -1.0
             self._update(best, emb, duration_s)
             return best, _match_confidence(best_sim, runner_up, self.threshold)
-        if duration_s < self.short_s and self._previous is not None:
+        if self._previous is not None and self.tentative(best_sim, duration_s):
             return self._previous, self.INHERIT_CONFIDENCE
         if len(self._tracks) >= self.max_speakers:
             self._previous = best
@@ -183,6 +204,50 @@ class OnlineClusterer:
             if self._previous == drop:
                 self._previous = keep
             merges.append((drop, keep))
+
+    # ---- carrying tracks over to a later session of the meeting --------------------
+    def state(self) -> dict[str, Any]:
+        """A JSON-serialisable snapshot: every live track's running centroid and the next track number."""
+        return {
+            "next": self._next,
+            "tracks": {
+                name: {
+                    "total": [round(float(x), 6) for x in t.total],
+                    "weight": round(t.weight, 3),
+                    "segments": t.segments,
+                }
+                for name, t in self._tracks.items()
+            },
+        }
+
+    def restore(self, state: Mapping[str, Any], *, centroids: bool = True) -> None:
+        """Continue from an earlier session's `state()`, before anything was assigned here.
+
+        Its tracks keep their names and centroids, so a returning voice gets its old track, and new
+        tracks are numbered after every number it used (merged-away ones included). centroids=False
+        keeps only the numbering (the speaker model changed, so the old centroids are not comparable).
+        Raises ValueError for a malformed state, leaving this clusterer unchanged.
+        """
+        if self._tracks or self._next != 1:
+            raise RuntimeError("restore() must be called before the first assignment")
+        tracks: dict[str, _Track] = {}
+        try:
+            for name, raw in dict(state.get("tracks") or {}).items():
+                _track_number(name)
+                total = np.asarray(raw["total"], dtype=np.float32).reshape(-1)
+                weight = float(raw["weight"])
+                if not np.all(np.isfinite(total)) or not np.any(total) or not weight > 0:
+                    raise ValueError(f"track {name} has an invalid centroid")
+                segments = int(raw.get("segments", 1))
+                tracks[name] = _Track(track=name, total=total, weight=weight, segments=segments)
+            next_number = max([int(state.get("next", 1)), *(_track_number(n) + 1 for n in tracks)])
+        except (KeyError, TypeError, AttributeError) as exc:
+            raise ValueError(f"malformed speaker state: {type(exc).__name__}: {exc}") from exc
+        if centroids:
+            if len({t.total.size for t in tracks.values()}) > 1:
+                raise ValueError("tracks have centroids of different sizes")
+            self._tracks = dict(sorted(tracks.items(), key=lambda kv: _track_number(kv[0])))
+        self._next = next_number
 
     def _closest_pair(self) -> tuple[str, str] | None:
         names = list(self._tracks)  # insertion order == first appearance
@@ -346,6 +411,16 @@ def _quietest(audio: np.ndarray, center: int, *, radius: int, lo: int, hi: int, 
         return int(min(max(center, lo), hi))
     frames = audio[a : a + ((b - a) // frame) * frame].reshape(-1, frame)
     return a + int(np.argmin(np.square(frames).mean(axis=1))) * frame + frame // 2
+
+
+_TRACK_NAME = re.compile(r"S([1-9]\d{0,5})")
+
+
+def _track_number(name: str) -> int:
+    match = _TRACK_NAME.fullmatch(str(name))
+    if match is None:
+        raise ValueError(f"not a speaker track name: {name!r}")
+    return int(match.group(1))
 
 
 def _unit(vec: np.ndarray) -> np.ndarray:

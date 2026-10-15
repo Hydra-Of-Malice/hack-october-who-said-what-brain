@@ -8,12 +8,19 @@ can round-trip a function-calling exchange.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
+import heapq
+import itertools
 import json
 import logging
 import re
+import threading
 import time
 import uuid
+from collections.abc import AsyncIterator, Iterator
+from contextvars import ContextVar
 from functools import lru_cache
 from typing import Any
 
@@ -26,6 +33,13 @@ log = logging.getLogger(__name__)
 
 OLLAMA_TIMEOUT = httpx.Timeout(connect=5.0, read=180.0, write=60.0, pool=5.0)
 PROBE_TIMEOUT_S = 2.0
+REPROBE_S = 30.0  # auto routing without a runtime: how often to look for Ollama again
+# Admission control for one Ollama server (a laptop GPU runs one or two generations at a time).
+OLLAMA_SLOTS = 2  # calls in flight
+OLLAMA_MAX_WAITING = 6  # normal-priority calls allowed to queue; more fail fast instead of piling up
+OLLAMA_QUEUE_WAIT_S = 90.0  # longest wait for a slot
+
+_priority: ContextVar[int] = ContextVar("wsw_llm_priority", default=0)
 
 _THOUGHT_BLOCK = re.compile(r"^\s*(?:<\|channel>thought.*?<channel\|>|<think>.*?</think>)", re.DOTALL)
 _EVIDENCE_LINE = re.compile(r"^\[u:([^\]]+)\]\s*(.+)$", re.MULTILINE)
@@ -88,6 +102,107 @@ def _ms_since(t0: float) -> float:
     return round((time.perf_counter() - t0) * 1000, 1)
 
 
+@contextlib.contextmanager
+def llm_priority(level: int = 1) -> Iterator[None]:
+    """Model calls made inside this block (meeting extraction, summaries) go ahead of queued questions
+    and are never refused for a full queue."""
+    token = _priority.set(level)
+    try:
+        yield
+    finally:
+        _priority.reset(token)
+
+
+class ModelGate:
+    """At most `slots` calls in flight to one model server. Waiting callers are served highest priority
+    first, then in arrival order. When `max_waiting` normal-priority callers already wait, another one
+    fails fast with LLMError instead of queueing (a flood of questions, or abandoned ones, must not starve
+    live extraction), and nobody waits longer than `wait_s`. Usable from any event loop or thread."""
+
+    def __init__(self, slots: int, max_waiting: int, wait_s: float) -> None:
+        self.slots = max(1, slots)
+        self.max_waiting = max(0, max_waiting)
+        self.wait_s = wait_s
+        self._lock = threading.Lock()
+        self._busy = 0
+        self._waiters: list[tuple[int, int, asyncio.Future[None], asyncio.AbstractEventLoop]] = []
+        self._seq = itertools.count()
+
+    @property
+    def busy(self) -> int:
+        return self._busy
+
+    @property
+    def waiting(self) -> int:
+        return sum(1 for w in self._waiters if not w[2].done())
+
+    @contextlib.asynccontextmanager
+    async def slot(self) -> AsyncIterator[None]:
+        await self._acquire()
+        try:
+            yield
+        finally:
+            self._release()
+
+    async def _acquire(self) -> None:
+        priority = _priority.get()
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            if self._busy < self.slots and not any(not w[2].done() for w in self._waiters):
+                self._busy += 1
+                return
+            normal_waiting = sum(1 for p, _, f, _ in self._waiters if p >= 0 and not f.done())
+            if priority <= 0 and normal_waiting >= self.max_waiting:
+                raise LLMError("the language model is busy with other requests; try again in a moment")
+            future: asyncio.Future[None] = loop.create_future()
+            heapq.heappush(self._waiters, (-priority, next(self._seq), future, loop))
+        try:
+            await asyncio.wait_for(future, self.wait_s)
+        except BaseException as exc:
+            with self._lock:
+                granted = future.done() and not future.cancelled()
+                future.cancel()
+                self._waiters = [w for w in self._waiters if w[2] is not future]
+                heapq.heapify(self._waiters)
+            if granted:
+                self._release()  # the slot arrived as we gave up: pass it on
+            if isinstance(exc, TimeoutError):
+                raise LLMError(f"waited {self.wait_s:.0f} s for the language model; it is busy") from None
+            raise
+
+    def _release(self) -> None:
+        with self._lock:
+            while self._waiters:
+                _, _, future, loop = heapq.heappop(self._waiters)
+                if future.done():
+                    continue  # that caller gave up
+                try:
+                    loop.call_soon_threadsafe(self._grant, future)
+                except RuntimeError:  # its event loop is closed
+                    continue
+                return  # the slot passes to that caller
+            self._busy = max(0, self._busy - 1)
+
+    def _grant(self, future: asyncio.Future[None]) -> None:
+        if future.done():
+            self._release()  # gave up between hand-over and wake-up
+        else:
+            future.set_result(None)
+
+
+_gates: dict[str, ModelGate] = {}
+_gates_lock = threading.Lock()
+
+
+def model_gate(key: str) -> ModelGate:
+    """The process-wide gate for one model server (keyed by its base URL)."""
+    with _gates_lock:
+        gate = _gates.get(key)
+        if gate is None:
+            gate = _gates[key] = ModelGate(OLLAMA_SLOTS, OLLAMA_MAX_WAITING, OLLAMA_QUEUE_WAIT_S)
+        return gate
+
+
 # ---------------------------------------------------------------------------
 # Ollama (laptop: Gemma 4 E4B with native audio)
 # ---------------------------------------------------------------------------
@@ -96,7 +211,7 @@ def _ms_since(t0: float) -> float:
 TRANSCRIBE_PROMPT = (
     "Transcribe this audio clip of a spoken question exactly, in English. "
     "Output only the transcript on a single line, with no preamble, quotes or commentary. "
-    "Write numbers as digits."
+    "Write numbers as digits. If nobody speaks in the clip, output nothing."
 )
 
 
@@ -163,7 +278,10 @@ class OllamaLLM:
             )
         prompt = TRANSCRIBE_PROMPT
         if hint:
-            prompt += f" Names and terms that may occur: {hint}."
+            prompt += (
+                f" Names and terms that may occur, for spelling only (never write one you did not hear): "
+                f"{hint}."
+            )
         payload = {
             "model": self.model,
             "messages": [
@@ -206,6 +324,10 @@ class OllamaLLM:
         return out
 
     async def _post_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
+        async with model_gate(self.base_url).slot():
+            return await self._send_chat(payload)
+
+    async def _send_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
         url = f"{self.base_url}/api/chat"
         try:
             async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT, transport=self._transport) as client:
@@ -576,10 +698,86 @@ def select_llm(s: Settings, probe: Any = probe_ollama_model) -> LLM:
     if probe(s.ollama_url, s.ollama_model) is not None:
         return OllamaLLM(s.ollama_url, s.ollama_model)
     log.warning(
-        "no Gemma 4 runtime available (no GEMINI_API_KEY, Ollama model %s not found); using the fake LLM",
+        "no Gemma 4 runtime available (no GEMINI_API_KEY, Ollama model %s not found); using the fake LLM "
+        "and checking for Ollama again every %.0f s",
         s.ollama_model,
+        REPROBE_S,
     )
-    return FakeLLM()
+    return AutoLLM(s, probe)
+
+
+class AutoLLM:
+    """Auto routing that found no Gemma 4 runtime: answers with the fake LLM meanwhile, and looks for the
+    Ollama model again at most every `interval_s` (never blocking the event loop), switching to it for good
+    once it is there. Starting the API before Ollama is up then needs no restart."""
+
+    def __init__(self, s: Settings, probe: Any = probe_ollama_model, interval_s: float = REPROBE_S) -> None:
+        self._url, self._model = s.ollama_url, s.ollama_model
+        self._probe = probe
+        self._interval = interval_s
+        self._lock = threading.Lock()
+        self._next_probe = time.monotonic() + interval_s
+        self._probing = False
+        self.current: LLM = FakeLLM()
+
+    @property
+    def provider(self) -> str:
+        return self._active().provider
+
+    @property
+    def model(self) -> str:
+        return self._active().model
+
+    @property
+    def supports_audio(self) -> bool:
+        return bool(getattr(self._active(), "supports_audio", False))
+
+    async def chat(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        json_mode: bool = False,
+        temperature: float = 0.2,
+        max_tokens: int = 800,
+    ) -> LLMResult:
+        if self._claim_probe():
+            await asyncio.to_thread(self._reprobe)
+        return await self.current.chat(
+            messages, tools=tools, json_mode=json_mode, temperature=temperature, max_tokens=max_tokens
+        )
+
+    async def transcribe(self, wav_bytes: bytes, *, hint: str | None = None) -> Transcript:
+        return await self.current.transcribe(wav_bytes, hint=hint)
+
+    def _active(self) -> LLM:
+        """The current model. Reading `provider` (callers skip the model while it is "fake") starts a
+        background probe when one is due, so properties never block."""
+        if self._claim_probe():
+            threading.Thread(target=self._reprobe, name="llm-reprobe", daemon=True).start()
+        return self.current
+
+    def _claim_probe(self) -> bool:
+        if isinstance(self.current, OllamaLLM):
+            return False
+        with self._lock:
+            if self._probing or time.monotonic() < self._next_probe:
+                return False
+            self._probing = True
+            return True
+
+    def _reprobe(self) -> None:
+        try:
+            found = self._probe(self._url, self._model) is not None
+        except Exception as exc:  # noqa: BLE001 - a failed probe just means "not yet"
+            log.debug("Ollama re-probe failed: %r", exc)
+            found = False
+        with self._lock:
+            if found and not isinstance(self.current, OllamaLLM):
+                self.current = OllamaLLM(self._url, self._model)
+                log.warning("Ollama model %s is available now; switching from the fake LLM", self._model)
+            self._next_probe = time.monotonic() + self._interval
+            self._probing = False
 
 
 def select_audio_llm(s: Settings, text_llm: LLM, probe: Any = probe_ollama_model) -> OllamaLLM | None:
@@ -592,6 +790,7 @@ def select_audio_llm(s: Settings, text_llm: LLM, probe: Any = probe_ollama_model
     if isinstance(capabilities, list) and capabilities and "audio" not in capabilities:
         log.info("Ollama model %s does not list the audio capability", s.ollama_model)
         return None
+    text_llm = getattr(text_llm, "current", text_llm)  # AutoLLM: the model it has switched to
     if isinstance(text_llm, OllamaLLM) and text_llm.model == s.ollama_model:
         return text_llm
     return OllamaLLM(s.ollama_url, s.ollama_model)
@@ -604,9 +803,23 @@ def get_llm() -> LLM:
     return llm
 
 
-@lru_cache(maxsize=1)
+_audio_lock = threading.Lock()
+_audio_choice: tuple[float, OllamaLLM | None] | None = None  # (monotonic time chosen, model)
+
+
 def get_audio_llm() -> OllamaLLM | None:
-    return select_audio_llm(settings(), get_llm())
+    """The Gemma 4 model that hears spoken questions, or None (Whisper). A None answer is re-checked after
+    REPROBE_S, so Ollama starting after the API still takes over. May probe Ollama (blocking, up to
+    PROBE_TIMEOUT_S): call it off the event loop."""
+    global _audio_choice
+    with _audio_lock:
+        if _audio_choice is not None:
+            chosen_at, llm = _audio_choice
+            if llm is not None or time.monotonic() - chosen_at < REPROBE_S:
+                return llm
+        llm = select_audio_llm(settings(), get_llm())
+        _audio_choice = (time.monotonic(), llm)
+        return llm
 
 
 def get_extraction_llm() -> LLM:
@@ -614,8 +827,10 @@ def get_extraction_llm() -> LLM:
 
 
 def reset_llm_cache() -> None:
+    global _audio_choice
     get_llm.cache_clear()
-    get_audio_llm.cache_clear()
+    with _audio_lock:
+        _audio_choice = None
 
 
 def llm_info() -> dict[str, Any]:

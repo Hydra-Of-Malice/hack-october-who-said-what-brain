@@ -305,6 +305,42 @@ def test_name_speaker_links_person_and_updates_owners(store: GraphStore, raw) ->
         store.name_speaker("m1", "S1", "   ")
 
 
+def test_corrected_speaker_name_hands_named_items_back(store: GraphStore, raw) -> None:
+    seed(store)
+    store.write_insights("m1", Insights(action_items=[ActionItemDraft("Send the deck", ["m1:u00003"], "Priya")]))
+
+    def owner(text: str) -> tuple[Any, Any, list[list[Any]]]:
+        item = next(i for i in store.list_action_items(meeting_id="m1") if i["text"] == text)
+        edges = rows(raw, "MATCH (a:ActionItem {text: $text})-[:ASSIGNED_TO]->(s:Speaker) RETURN s.id",
+                     {"text": text})
+        return item["owner"], item["owner_track"], edges
+
+    assert owner("Send the deck") == ("Priya", None, [])
+    store.name_speaker("m1", "S1", "Priya")  # a mistake: S1 is Arjun
+    assert owner("Send the deck") == ("Priya", "S1", [["m1:S1"]])
+    store.name_speaker("m1", "S1", "Arjun")  # the correction hands the item back to the name the transcript gave
+    assert owner("Send the deck") == ("Priya", None, [])
+    store.name_speaker("m1", "S2", "Priya")
+    assert owner("Send the deck") == ("Priya", "S2", [["m1:S2"]])
+    assert {p["name"]: p["open_items"] for p in store.list_people()} == {"Arjun": 0, "Priya": 1}
+
+    store.name_speaker("m1", "S2", "Priya Sharma")  # a fuller name is still the same person
+    assert owner("Send the deck") == ("Priya Sharma", "S2", [["m1:S2"]])
+    store.name_speaker("m1", "S2", "Priya")
+    assert owner("Send the deck") == ("Priya", "S2", [["m1:S2"]])
+
+    store.name_speaker("m1", "S3", "Rahul")  # a mistake made before extraction: S3 is Meera
+    store.write_insights("m1", Insights(action_items=[ActionItemDraft("Fix onboarding emails", ["m1:u00004"], "rahul"),
+                                                      ActionItemDraft("Book the room", ["m1:u00004"], "S3")]))
+    assert owner("Fix onboarding emails") == ("Rahul", "S3", [["m1:S3"]])
+    store.name_speaker("m1", "S3", "Meera")
+    assert owner("Fix onboarding emails") == ("Rahul", None, [])
+    assert owner("Book the room") == ("Meera", "S3", [["m1:S3"]])  # track-owned items still follow the track
+
+    store.merge_speakers("m1", "S2", "S1")  # S2's voice was Arjun's after all: the item is Priya's again
+    assert owner("Send the deck") == ("Priya", None, [])
+
+
 # ---- insights ------------------------------------------------------------------------------------------
 
 

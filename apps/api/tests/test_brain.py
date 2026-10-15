@@ -6,12 +6,16 @@ Unit tests use FakeLLM / a scripted LLM, the HashEmbedder and an in-memory fake 
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import io
 import json
 import math
 import shutil
 import subprocess
 import sys
+import threading
+import tracemalloc
 import types
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,16 +27,28 @@ import pytest
 import soundfile as sf
 
 from wsw_brain.brain import agent as agent_mod
+from wsw_brain.brain import llm as llm_mod
 from wsw_brain.brain import voice as voice_mod
 from wsw_brain.brain.agent import VoiceAgent, resolve_citations
 from wsw_brain.brain.embed import GemmaEmbedder, HashEmbedder
-from wsw_brain.brain.extract import Extractor, heuristic_extract, parse_due, parse_json_object
+from wsw_brain.brain.extract import (
+    Extractor,
+    heuristic_extract,
+    insights_from_json,
+    parse_due,
+    parse_json_object,
+    speaker_tracks_to_names,
+)
 from wsw_brain.brain.llm import (
+    AutoLLM,
     FakeLLM,
     GeminiLLM,
+    LLMError,
+    ModelGate,
     OllamaLLM,
     OpenAICompatLLM,
     assistant_tool_message,
+    llm_priority,
     ollama_model_hears_audio,
     probe_ollama_model,
     select_audio_llm,
@@ -44,10 +60,11 @@ from wsw_brain.brain.llm import (
 from wsw_brain.brain.retrieve import Retriever, rrf_fuse
 from wsw_brain.brain.summary import heuristic_summary, summarize_meeting
 from wsw_brain.config import settings
-from wsw_brain.contracts import LLMResult, ToolCall
+from wsw_brain.contracts import LLMResult, ToolCall, Transcript
 
 OLLAMA_URL = settings().ollama_url
 OLLAMA_MODEL = settings().ollama_model
+FIXTURE_WAV = Path(__file__).parent / "fixtures" / "two_speakers.wav"
 
 # ---------------------------------------------------------------------------
 # In-memory fake GraphStore (only the methods the brain calls)
@@ -566,6 +583,116 @@ async def test_tool_errors_are_reported_not_raised(store: FakeStore) -> None:
     assert result.citations == []
 
 
+def test_completion_request_ignores_requests_that_are_not_completions() -> None:
+    for question in [
+        "Set a reminder for when the pricing deck is done.",
+        "Close the loop with Rahul on the billing page.",
+        "Finish the pricing deck summary for me.",
+        "Mark the pricing deck as not done.",
+        "Set the billing page back to open, it is not done yet.",
+        "Can you set up a meeting once the billing page is finished?",
+        "Don't mark the pricing deck as done.",
+        "Mark the billing page done if Rahul confirms.",
+    ]:
+        assert agent_mod.completion_request(question) is None, question
+    assert agent_mod.completion_request("Mark the billing page as done.") == "billing page"
+    assert agent_mod.completion_request("Set the billing page to complete please.") == "billing page"
+    assert agent_mod.completion_request("Yes, close it.") == ""
+    assert agent_mod.completion_request("When is the deck due? Mark it done.") == "deck"
+
+
+async def test_intent_fallback_leaves_reminders_and_reopen_requests_alone(store: FakeStore) -> None:
+    """The model correctly declines (there is no reminder or reopen tool); the fallback must not override
+    that by completing the item."""
+    llm = ScriptedLLM(
+        [
+            "I can't set reminders; the pricing deck is due Friday [u:m1:u00003].",
+            "I can only mark items done, not reopen them.",
+            "Sure, Rahul updates the billing page next week [u:m1:u00004].",
+        ]
+    )
+    agent = make_agent(store, llm)
+    first = await agent.ask("s10", "Set a reminder for when the pricing deck is done.")
+    second = await agent.ask("s10", "Mark the pricing deck as not done.")
+    third = await agent.ask("s10", "Close the loop with Rahul on the billing page.")
+    assert [i["status"] for i in store.items] == ["open", "open"]
+    assert first.tool_trace == second.tool_trace == third.tool_trace == []
+    assert second.answer == "I can only mark items done, not reopen them."
+
+
+def _hiring_deck() -> dict[str, Any]:
+    return {
+        "id": "ai3",
+        "meeting_id": "m2",
+        "meeting_title": "Hiring sync",
+        "text": "Send the hiring deck to the recruiters",
+        "owner": "Priya",
+        "owner_track": "S2",
+        "due": None,
+        "status": "open",
+        "created_at": 3,
+        "done_at": None,
+        "evidence": ["m2:u00001"],
+    }
+
+
+def test_match_item_breaks_ties_by_conversation_then_meeting(store: FakeStore) -> None:
+    agent = make_agent(store, FakeLLM())
+    items = [_hiring_deck(), *store.items]  # newest first, as the store lists them
+    nowhere = agent_mod._Turn("s", None)
+    item, tied = agent._match_item(items, "the deck", nowhere)
+    assert item is None and [i["id"] for i in tied] == ["ai3", "ai1"]  # equal: ask, don't guess
+    item, tied = agent._match_item(items, "the deck", agent_mod._Turn("s", "m1"))
+    assert item is not None and item["id"] == "ai1" and tied == []  # the current meeting's deck
+    talked_about = agent_mod._Turn("s", "m1")
+    talked_about.add_evidence([{"utterance_id": "m2:u00001"}])
+    item, _ = agent._match_item(items, "Priya's deck", talked_about)
+    assert item is not None and item["id"] == "ai3"  # the one this conversation is about wins
+    assert agent._match_item(items, "pricing page", nowhere) == (None, [])  # half a match is no match
+    done_deck = dict(store.items[0], status="done")
+    item, _ = agent._match_item([_hiring_deck(), done_deck, store.items[1]], "pricing deck", nowhere)
+    assert item is not None and item["id"] == "ai1" and item["status"] == "done"
+    item, _ = agent._match_item(items, "the action item", talked_about)  # only filler: use the conversation
+    assert item is not None and item["id"] == "ai3"
+
+
+async def test_complete_item_reports_ties_and_done_items_without_writing(store: FakeStore) -> None:
+    store.items.insert(0, _hiring_deck())
+    agent = make_agent(store, FakeLLM())
+    result, count = await agent._t_complete_item(agent_mod._Turn("s", None), {"description": "deck"})
+    assert count == 0 and "several" in result["error"]
+    assert [c["id"] for c in result["candidates"]] == ["ai3", "ai1"]
+    store.items[1]["status"] = "done"  # the pricing deck is already done
+    result, count = await agent._t_complete_item(agent_mod._Turn("s", None), {"description": "pricing deck"})
+    assert result["already_done"] is True and result["item"]["id"] == "ai1"
+    assert [i["status"] for i in store.items] == ["open", "done", "open"]
+    assert not any(name == "set_action_item_status" for name, _ in store.calls)
+
+
+async def test_shown_evidence_ids_are_citable(store: FakeStore) -> None:
+    """Every evidence id shown to the model is in the turn's evidence, so citing it is never dropped."""
+    store.decisions[0]["evidence"] = ["m1:u00002", "m1:u00005"]  # sorted, as the store returns them
+    agent = make_agent(store, FakeLLM())
+    turn = agent_mod._Turn("s", "m1")
+    turn.add_evidence(store.get_utterances(["m1:u00005"]))  # linked through its second id only
+    linked = await agent._linked_records(turn)
+    assert "- Price the Pro plan at $25 a month (active) [u:m1:u00005]" in linked
+    resolved, cited = resolve_citations("We priced it [u:m1:u00005].", turn.evidence)
+    assert cited == ["m1:u00005"] and resolved == "We priced it."
+
+    turn = agent_mod._Turn("s", "m1")
+    result, _ = await agent._t_list_decisions(turn, {})
+    shown = {e[2:] for d in result["decisions"] for e in d["evidence"]}
+    assert shown == {"m1:u00002", "m1:u00005"} and shown <= set(turn.evidence)
+
+    turn = agent_mod._Turn("s", "m1")
+    result, _ = await agent._t_summarize(turn, {"meeting_id": "m1"})
+    shown = {d["evidence"][2:] for d in result["decisions"]} | {
+        i["evidence"][2:] for i in result["action_items"]
+    }
+    assert shown == {"m1:u00002", "m1:u00003", "m1:u00004"} and shown <= set(turn.evidence)
+
+
 def test_resolve_citations_variants() -> None:
     evidence = {"m1:u00001": {}, "m1:u00002": {}}
     text, cited = resolve_citations(
@@ -607,6 +734,52 @@ def test_heuristic_extract_finds_decision_and_owned_action(store: FakeStore) -> 
     churn = next(a for a in insights.action_items if a.evidence == ["m1:u00006"])
     assert churn.owner == "S2" and churn.due == "Monday" and churn.text.startswith("Check the churn numbers")
     assert "pricing" in insights.topics
+
+
+def test_extraction_names_speaker_tracks_but_keeps_s3(store: FakeStore) -> None:
+    """Only a track used for a person becomes a name; "AWS S3" is a product, even with a speaker S3."""
+    speakers = [
+        *SPEAKERS["m1"][:2],
+        {"track": "S3", "label": "Speaker 3", "name": "Asha", "person_id": "asha", "color_idx": 2},
+    ]
+    said = {
+        "id": "m1:u00006",
+        "meeting_id": "m1",
+        "seq": 6,
+        "speaker": "S3",
+        "speaker_name": "Asha",
+        "t_start": 36.0,
+        "t_end": 41.0,
+        "text": "Let's use AWS S3 instead of GCS, and I'll move the backups to S3 by Friday.",
+    }
+    data = {
+        "decisions": [
+            {"text": "Use AWS S3 instead of GCS", "evidence": ["m1:u00006"], "proposed_by": "S3"},
+            {"text": "S2 will own the billing page", "evidence": ["m1:u00004"]},
+        ],
+        "action_items": [
+            {"text": "Move the backups to S3 by Friday", "owner": "S3", "evidence": ["m1:u00006"]},
+            {
+                "text": "S1 to send the deck, ask S2 to review S1's draft",
+                "owner": "S1",
+                "evidence": ["m1:u00003"],
+            },
+        ],
+    }
+    insights = insights_from_json(data, [*store.utts["m1"], said], speakers)
+    assert [d.text for d in insights.decisions] == [
+        "Use AWS S3 instead of GCS",
+        "Rahul will own the billing page",
+    ]
+    assert [(a.text, a.owner) for a in insights.action_items] == [
+        ("Move the backups to S3 by Friday", "S3"),
+        ("Priya to send the deck, ask Rahul to review Priya's draft", "S1"),
+    ]
+    table = {s["track"]: s for s in speakers}
+    # Not said aloud, but not where a person goes either; and S23 is no speaker of this meeting.
+    assert speaker_tracks_to_names("Use AWS S3 instead of GCS", table) == "Use AWS S3 instead of GCS"
+    assert speaker_tracks_to_names("Test on the Galaxy S23", table) == "Test on the Galaxy S23"
+    assert speaker_tracks_to_names("S3 said the bucket is ready", table) == "Asha said the bucket is ready"
 
 
 def test_parse_due_and_json_helpers() -> None:
@@ -701,6 +874,39 @@ def test_retriever_uses_speaker_and_recent_sources(store: FakeStore) -> None:
     hits, _ = retriever.retrieve("What was said just now?", meeting_id="m1", k=4)
     assert ("recent_utterances", ("m1",)) in store.calls
     assert hits[0]["utterance_id"] == "m1:u00005"  # newest utterance ranks first for "just now"
+
+
+class _OtherSpaceEmbedder:
+    """Same dimension as the store's vectors, different space: EmbeddingGemma vectors searched with the
+    hashing fallback (or the reverse)."""
+
+    name = "other-768"
+    dim = 768
+
+    def __init__(self) -> None:
+        self._hash = HashEmbedder(768)
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._hash.embed_query(text)[::-1]
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [v[::-1] for v in self._hash.embed_documents(texts)]
+
+
+def test_retriever_skips_vectors_from_another_embedder(store: FakeStore) -> None:
+    same = Retriever(store, store.embedder)
+    hits = store.search_vector(store.embedder.embed_query("pricing deck"), k=8)
+    assert hits and same.same_space_hits(hits) == hits
+
+    other_embedder = _OtherSpaceEmbedder()
+    other = Retriever(store, other_embedder)
+    noise = store.search_vector(other_embedder.embed_query("pricing deck"), k=8)
+    assert {h["meeting_id"] for h in noise} == {"m1", "m2"}
+    assert other.same_space_hits(noise) == []
+    store.calls.clear()
+    fused, _ = other.retrieve("When is the pricing deck due?", k=5)
+    assert fused and all(h["via"] != "vector" for h in fused)
+    assert [name for name, _ in store.calls].count("search_vector") == 1  # verdicts are cached
 
 
 def test_hash_embedder_is_deterministic_and_normalised() -> None:
@@ -912,7 +1118,9 @@ def test_llm_routing() -> None:
     present = lambda url, model: {"name": model, "capabilities": ["completion", "audio"]}
     absent = lambda url, model: None
     assert isinstance(select_llm(_settings(), probe=present), OllamaLLM)
-    assert isinstance(select_llm(_settings(), probe=absent), FakeLLM)
+    waiting = select_llm(_settings(), probe=absent)
+    assert isinstance(waiting, AutoLLM) and isinstance(waiting.current, FakeLLM)
+    assert waiting.provider == "fake" and waiting.model == "fake"
     assert isinstance(select_llm(_settings(gemini_api_key="k"), probe=absent), GeminiLLM)
     assert isinstance(select_llm(_settings(llm_provider="gemini"), probe=present), FakeLLM)
     assert isinstance(
@@ -926,6 +1134,102 @@ def test_llm_routing() -> None:
     no_audio = lambda url, model: {"name": model, "capabilities": ["completion"]}
     assert select_audio_llm(_settings(), FakeLLM(), probe=no_audio) is None
     assert select_audio_llm(_settings(ollama_model="gemma4:31b"), FakeLLM(), probe=present) is None
+
+
+async def test_auto_routing_switches_to_ollama_once_it_appears(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The API started before Ollama: answers come from the fake LLM until a re-probe finds the model."""
+
+    class StubOllama:
+        provider = "ollama"
+        supports_audio = True
+
+        def __init__(self, url: str, model: str) -> None:
+            self.model = model
+
+        async def chat(self, messages: list[dict[str, Any]], **kwargs: Any) -> LLMResult:
+            return LLMResult(text="gemma", tool_calls=[], model=self.model, provider="ollama", latency_ms=1.0)
+
+    monkeypatch.setattr(llm_mod, "OllamaLLM", StubOllama)
+    tags: dict[str, Any] = {}
+    probes: list[str] = []
+
+    def probe(url: str, model: str) -> dict[str, Any] | None:
+        probes.append(model)
+        return tags.get(model)
+
+    llm = AutoLLM(_settings(), probe=probe, interval_s=0.0)
+    hello = [{"role": "user", "content": "hi"}]
+    assert (await llm.chat(hello)).provider == "fake" and probes == ["gemma4:e4b"]
+    tags["gemma4:e4b"] = {"name": "gemma4:e4b", "capabilities": ["completion", "audio"]}
+    assert (await llm.chat(hello)).text == "gemma"
+    assert llm.provider == "ollama" and llm.model == "gemma4:e4b" and llm.supports_audio
+    assert len(probes) == 2  # once switched, no more probes
+    assert select_audio_llm(_settings(), llm, probe=probe) is llm.current
+
+
+def test_audio_model_is_rechecked_after_a_miss(monkeypatch: pytest.MonkeyPatch) -> None:
+    picks: list[Any] = [None, "gemma4-audio"]
+    monkeypatch.setattr(llm_mod, "_audio_choice", None)
+    monkeypatch.setattr(llm_mod, "get_llm", lambda: FakeLLM())
+    monkeypatch.setattr(llm_mod, "select_audio_llm", lambda s, text_llm: picks.pop(0))
+    assert llm_mod.get_audio_llm() is None
+    assert llm_mod.get_audio_llm() is None  # the miss is cached for REPROBE_S
+    monkeypatch.setattr(llm_mod, "REPROBE_S", 0.0)
+    assert llm_mod.get_audio_llm() == "gemma4-audio"
+    assert llm_mod.get_audio_llm() == "gemma4-audio" and picks == []  # a found model is kept
+
+
+async def test_model_gate_serves_extraction_first_and_refuses_floods() -> None:
+    gate = ModelGate(slots=1, max_waiting=1, wait_s=5.0)
+    order: list[str] = []
+    release = asyncio.Event()
+
+    async def call(name: str, priority: int = 0) -> None:
+        with llm_priority(priority) if priority else contextlib.nullcontext():
+            async with gate.slot():
+                order.append(name)
+                if name == "first":
+                    await release.wait()
+
+    first = asyncio.create_task(call("first"))
+    await asyncio.sleep(0)
+    question = asyncio.create_task(call("question"))
+    await asyncio.sleep(0)
+    with pytest.raises(LLMError, match="busy"):
+        await call("flood")  # the one queue place for questions is taken: fail fast, no model work
+    extraction = asyncio.create_task(call("extraction", priority=1))
+    await asyncio.sleep(0)
+    assert (gate.busy, gate.waiting) == (1, 2)
+    release.set()
+    await asyncio.gather(first, question, extraction)
+    assert order == ["first", "extraction", "question"]
+    assert (gate.busy, gate.waiting) == (0, 0)
+
+    impatient = ModelGate(slots=1, max_waiting=4, wait_s=0.05)
+    async with impatient.slot():
+        with pytest.raises(LLMError, match="waited"):
+            async with impatient.slot():
+                pass
+    assert (impatient.busy, impatient.waiting) == (0, 0)
+
+
+async def test_extraction_and_summaries_run_at_high_priority(store: FakeStore) -> None:
+    class Recorder(ScriptedLLM):
+        def __init__(self, replies: list[str | list[ToolCall]]) -> None:
+            super().__init__(replies)
+            self.priorities: list[int] = []
+
+        async def chat(self, messages: list[dict[str, Any]], **kwargs: Any) -> LLMResult:
+            self.priorities.append(llm_mod._priority.get())
+            return await super().chat(messages, **kwargs)
+
+    llm = Recorder(['{"decisions": [], "action_items": []}', "Priya and Rahul priced the Pro plan."])
+    await Extractor(llm).extract("m1", store.utts["m1"], SPEAKERS["m1"], [])
+    detail = store.get_meeting("m1")
+    assert detail is not None
+    await summarize_meeting(llm, detail)
+    assert llm.priorities == [1, 1]
+    assert llm_mod._priority.get() == 0
 
 
 # ---------------------------------------------------------------------------
@@ -942,8 +1246,39 @@ def _wav(seconds: float, rate: int = 44_100, channels: int = 2, amplitude: float
     return buf.getvalue()
 
 
+def _speech_wav(start_s: float, end_s: float, rate: int = 16_000, channels: int = 1) -> bytes:
+    """A clip of real speech from the listener fixture (a tone or noise is not a question)."""
+    samples, fixture_rate = sf.read(str(FIXTURE_WAV), dtype="float32")
+    clip = samples[int(start_s * fixture_rate) : int(end_s * fixture_rate)]
+    if rate != fixture_rate:
+        import soxr
+
+        clip = soxr.resample(clip, fixture_rate, rate).astype(np.float32)
+    data = np.stack([clip] * channels, axis=1) if channels > 1 else clip
+    buf = io.BytesIO()
+    sf.write(buf, data, rate, format="WAV", subtype="PCM_16")
+    return buf.getvalue()
+
+
+def _noise_wav(kind: str, seconds: float = 2.0) -> bytes:
+    rng = np.random.default_rng(7)
+    n = int(seconds * 16_000)
+    if kind == "hum":
+        clip = 0.05 * np.sin(2 * np.pi * 120 * np.arange(n) / 16_000)
+    elif kind == "pink":
+        spectrum = np.fft.rfft(rng.standard_normal(n))
+        spectrum[1:] /= np.sqrt(np.arange(1, len(spectrum)))
+        clip = np.fft.irfft(spectrum, n)
+        clip = clip / clip.std() * 10 ** (-50 / 20)
+    else:  # white noise; std 0.002 (peak ~0.008) is what Gemma 4 heard as "Mark it done."
+        clip = rng.standard_normal(n) * float(kind)
+    buf = io.BytesIO()
+    sf.write(buf, clip.astype(np.float32), 16_000, format="WAV", subtype="PCM_16")
+    return buf.getvalue()
+
+
 def test_prepare_question_audio_validates_and_resamples() -> None:
-    samples, wav16 = voice_mod.prepare_question_audio(_wav(1.0))
+    samples, wav16 = voice_mod.prepare_question_audio(_speech_wav(13.0, 14.0, rate=44_100, channels=2))
     assert abs(len(samples) - 16_000) <= 2 and samples.dtype == np.float32
     info = sf.info(io.BytesIO(wav16))
     assert (info.samplerate, info.channels) == (16_000, 1)
@@ -953,9 +1288,49 @@ def test_prepare_question_audio_validates_and_resamples() -> None:
         (_wav(0.1), "at least"),
         (_wav(31.0, rate=8_000, channels=1), "limit"),
         (_wav(1.0, amplitude=0.0), "silent"),
+        (_wav(1.0, channels=6), "6 channel"),
+        (_wav(1.0, rate=96_000, channels=1), "96000 Hz"),
     ]:
         with pytest.raises(ValueError, match=message):
             voice_mod.prepare_question_audio(bad)
+
+
+@pytest.mark.parametrize("kind", ["0.002", "0.02", "pink", "hum", "tone"])
+def test_question_audio_without_speech_is_refused(kind: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Room tone, hum or a held note passes a peak check, and Gemma 4 then hears the hint ("Mark it done.")
+    in it. Such a clip is refused as speechless, by the Silero VAD and by the envelope fallback alike."""
+    clip = _wav(2.0, rate=16_000, channels=1) if kind == "tone" else _noise_wav(kind)
+    with pytest.raises(ValueError, match="silent"):
+        voice_mod.prepare_question_audio(clip)
+
+    def no_vad(samples: np.ndarray) -> float:
+        raise FileNotFoundError("silero_vad.onnx")
+
+    monkeypatch.setattr(voice_mod, "_silero_speech_seconds", no_vad)
+    with pytest.raises(ValueError, match="silent"):
+        voice_mod.prepare_question_audio(clip)
+    samples, _ = voice_mod.prepare_question_audio(_speech_wav(13.0, 14.0))  # speech still passes
+    assert voice_mod.envelope_speech_seconds(samples) >= voice_mod.MIN_SPEECH_S
+
+
+def test_question_audio_length_is_checked_before_decoding(tmp_path: Path) -> None:
+    """Ten minutes of 48 kHz stereo FLAC silence is ~110 KB but ~220 MiB as float32: refuse it from the
+    header, without decoding it."""
+    path = tmp_path / "bomb.flac"
+    with sf.SoundFile(str(path), "w", 48_000, 2, format="FLAC", subtype="PCM_16") as out:
+        block = np.zeros((48_000 * 60, 2), dtype=np.float32)
+        for _ in range(10):
+            out.write(block)
+    data = path.read_bytes()
+    assert len(data) < 1024 * 1024
+    tracemalloc.start()
+    try:
+        with pytest.raises(ValueError, match="600.0 s; the limit is 30 s"):
+            voice_mod.prepare_question_audio(data)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 8 * 1024 * 1024
 
 
 async def test_transcribe_question_falls_back_to_whisper(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -974,9 +1349,65 @@ async def test_transcribe_question_falls_back_to_whisper(monkeypatch: pytest.Mon
     fake_listen.get_asr = lambda: FakeASR()  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "wsw_brain.listen", fake_listen)
     monkeypatch.setattr(voice_mod, "get_audio_llm", lambda: BrokenAudio())
-    transcript = await voice_mod.transcribe_question(_wav(1.0))
+    transcript = await voice_mod.transcribe_question(_speech_wav(13.0, 14.0))
     assert transcript.provider == "whisper" and transcript.text == "what did priya commit to"
     assert transcript.model == "faster-whisper-small"
+
+
+async def test_transcribe_question_decodes_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    threads: list[int] = []
+
+    def prepare(wav_bytes: bytes) -> tuple[np.ndarray, bytes]:
+        threads.append(threading.get_ident())
+        raise ValueError("question audio is silent")
+
+    monkeypatch.setattr(voice_mod, "prepare_question_audio", prepare)
+    with pytest.raises(ValueError, match="silent"):
+        await voice_mod.transcribe_question(b"RIFF")
+    assert threads and threads[0] != threading.get_ident()
+
+
+async def test_hint_echo_must_be_confirmed_by_whisper(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gemma 4 reads the hint back on noise; such a transcript is kept only if Whisper hears it too."""
+    hint = "Priya, Rahul, mark it done, action item, decision, due date, follow-up"
+    heard = {"text": ""}
+
+    class Gemma:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+        async def transcribe(self, wav_bytes: bytes, *, hint: str | None = None) -> Transcript:
+            return Transcript(
+                text=self.text, model="gemma4:e4b", provider="gemma4-audio:ollama", latency_ms=1.0
+            )
+
+    class FakeASR:
+        name = "faster-whisper-small"
+
+        def transcribe(self, samples: np.ndarray) -> tuple[str, float]:
+            return heard["text"], 0.5
+
+    fake_listen = types.ModuleType("wsw_brain.listen")
+    fake_listen.get_asr = lambda: FakeASR()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "wsw_brain.listen", fake_listen)
+    clip = _speech_wav(13.0, 14.0)
+    echo = "Mark it done action item decision due date follow up"
+
+    monkeypatch.setattr(voice_mod, "get_audio_llm", lambda: Gemma(echo))
+    with pytest.raises(ValueError, match="silent"):
+        await voice_mod.transcribe_question(clip, hint=hint)
+    heard["text"] = "Thank you."
+    monkeypatch.setattr(voice_mod, "get_audio_llm", lambda: Gemma("Mark it done."))
+    with pytest.raises(ValueError, match="silent"):
+        await voice_mod.transcribe_question(clip, hint=hint)
+    heard["text"] = "Market done."
+    transcript = await voice_mod.transcribe_question(clip, hint=hint)
+    assert transcript.text == "Mark it done." and transcript.provider == "gemma4-audio:ollama"
+    heard["text"] = ""  # a question with words of its own is not second-guessed
+    question = "When is Priya's pricing deck due?"
+    monkeypatch.setattr(voice_mod, "get_audio_llm", lambda: Gemma(question))
+    assert (await voice_mod.transcribe_question(clip, hint=hint)).text == question
+    assert not voice_mod.echoes_hint("Priya.", hint) and not voice_mod.echoes_hint("Mark it done.", "Priya")
 
 
 async def test_summaries(store: FakeStore) -> None:

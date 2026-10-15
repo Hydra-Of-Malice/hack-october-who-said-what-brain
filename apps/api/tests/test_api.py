@@ -17,10 +17,12 @@ import io
 import json
 import os
 import re
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -30,6 +32,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from wsw_brain.api import create_app
+from wsw_brain.api.capture import CaptureClosed, CaptureError, CaptureRegistry
 from wsw_brain.api.demo import demo_meeting_id, find_demo_meetings, name_tracks, parse_date_hint, plan_seed
 from wsw_brain.brain.llm import probe_ollama_model, reset_llm_cache
 from wsw_brain.config import settings
@@ -106,6 +109,10 @@ def _skip_unless_ready() -> None:
 
     if not isinstance(try_to_load_from_cache("Systran/faster-whisper-small", "model.bin"), str):
         pytest.skip("faster-whisper-small is not in the HF cache")
+    _skip_without_falkordb()
+
+
+def _skip_without_falkordb() -> None:
     store = GraphStore(FALKOR_URL, "wsw_test_api_probe")
     try:
         if not store.ping()["ok"]:
@@ -134,8 +141,8 @@ def environment(values: dict[str, str]) -> Iterator[None]:
 
 
 @contextlib.contextmanager
-def running_app(tmp: Path, **env: str) -> Iterator[tuple[TestClient, str]]:
-    graph = "wsw_test_api_" + uuid.uuid4().hex[:8]
+def running_app(tmp: Path, graph: str | None = None, **env: str) -> Iterator[tuple[TestClient, str]]:
+    graph = graph or "wsw_test_api_" + uuid.uuid4().hex[:8]
     values = {
         "WSW_GRAPH": graph,
         "WSW_LLM_PROVIDER": "fake",
@@ -579,6 +586,27 @@ class TestApi:
         assert info.duration >= 26.0
         assert client.post("/api/meetings/m_ffffffffff/end").status_code == 404
 
+    def test_resume_keeps_each_voice_on_its_track(self, client: TestClient) -> None:
+        mid = client.post("/api/meetings", json={"title": "Resume speakers"}).json()["id"]
+        stream_meeting_audio(client, mid, fixture_samples(0.0, 13.0), {"type": "stop", "end": False})
+        # The second stream opens with Zira, whom a fresh speaker clusterer would number S1 (David's track).
+        stream_meeting_audio(client, mid, fixture_samples(19.5, 31.0), {"type": "stop", "end": False})
+        assert client.post(f"/api/meetings/{mid}/end").status_code == 200
+        utterances = client.get(f"/api/meetings/{mid}").json()["utterances"]
+
+        def track_of(words: str) -> str:
+            tracks = [u["speaker"] for u in utterances if words in u["text"].lower()]
+            assert tracks, (words, [(u["speaker"], u["text"]) for u in utterances])
+            return tracks[0]
+
+        david, zira = track_of("morning"), track_of("survey")
+        assert david != zira
+        assert track_of("pricing page") == zira and track_of("mobile app") == david, utterances
+        speakers = settings().audio_dir / f"{mid}.speakers.json"
+        assert speakers.is_file()  # where the tracks wait between sessions (and across a restart)
+        assert client.delete(f"/api/meetings/{mid}").json() == {"deleted": True}
+        assert not speakers.exists()
+
     def test_dropped_socket_ends_the_meeting(self, client: TestClient) -> None:
         mid = client.post("/api/meetings", json={"title": "Dropped"}).json()["id"]
         stream_meeting_audio(client, mid, fixture_samples(0.0, 7.0), stop=None)
@@ -734,6 +762,224 @@ def test_demo_plan_and_naming() -> None:
         Utterance("m", 2, "S1", 6.0, 6.5, "c"),
     ]
     assert name_tracks(utterances, turns) == {"S1": "Priya", "S2": "Rahul"}
+
+
+# ---------------------------------------------------------------------------
+# who may change what (FalkorDB, no listener models)
+# ---------------------------------------------------------------------------
+
+
+def test_open_server_protects_demo_meetings_and_limits_new_ones(tmp_path: Path) -> None:
+    _skip_without_falkordb()
+    with running_app(tmp_path, WSW_CREATE_LIMIT="2") as (client, _graph):
+        demo = client.app.state.services.new_meeting("Pricing review", "demo")
+        assert client.get("/api/auth").json() == {"required": False, "operator": False}
+        for response in (
+            client.delete(f"/api/meetings/{demo['id']}"),
+            client.post(f"/api/meetings/{demo['id']}/end"),
+            client.patch(f"/api/meetings/{demo['id']}/speakers/S1", json={"name": "Mallory"}),
+        ):
+            assert response.status_code == 403 and "demo" in response.json()["detail"], response.text
+        assert client.get(f"/api/meetings/{demo['id']}").json()["meeting"]["status"] == "live"
+
+        first = client.post("/api/meetings", json={"title": "One"})
+        second = client.post("/api/meetings", json={"title": "Two"})
+        third = client.post("/api/meetings", json={"title": "Three"})
+        assert first.status_code == second.status_code == 200
+        assert third.status_code == 429 and int(third.headers["retry-after"]) > 0, third.text
+        assert client.delete(f"/api/meetings/{first.json()['id']}").json() == {"deleted": True}
+
+        preflight = client.options(
+            "/api/meetings",
+            headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "DELETE"},
+        )
+        assert "access-control-allow-origin" not in preflight.headers  # same origin only by default
+        live = f"/ws/meetings/{second.json()['id']}/audio"
+        evil = {"origin": "https://evil.example"}  # a page on another site cannot stream into a meeting
+        with pytest.raises(WebSocketDisconnect), client.websocket_connect(live, headers=evil):
+            pass
+        with client.websocket_connect(
+            "/ws/meetings/m_ffffffffff/audio", headers={"origin": "http://testserver"}
+        ) as ws:
+            assert "not found" in ws.receive_json()["detail"]
+
+
+def test_operator_token_guards_every_change(tmp_path: Path) -> None:
+    _skip_without_falkordb()
+    token = "op-" + uuid.uuid4().hex
+    with running_app(tmp_path, WSW_ADMIN_TOKEN=token) as (client, _graph):
+        demo = client.app.state.services.new_meeting("Pricing review", "demo")
+        assert client.get("/api/meetings").status_code == 200  # reading stays open
+        assert client.get("/api/auth").json() == {"required": True, "operator": False}
+        refused = [
+            client.post("/api/meetings", json={"title": "x"}),
+            client.post("/api/meetings", json={"title": "x"}, headers={"Authorization": "Bearer wrong"}),
+            client.post("/api/meetings/upload", files={"file": ("a.wav", b"x", "audio/wav")}),
+            client.post(f"/api/meetings/{demo['id']}/end"),
+            client.delete(f"/api/meetings/{demo['id']}"),
+            client.patch(f"/api/meetings/{demo['id']}/speakers/S1", json={"name": "Mallory"}),
+            client.patch("/api/action-items/m_x:a-1", json={"status": "done"}),
+        ]
+        assert [r.status_code for r in refused] == [401] * len(refused), [r.text for r in refused]
+        with client.websocket_connect("/ws/meetings/m_ffffffffff/audio") as ws:
+            message = ws.receive_json()
+        assert message["type"] == "error" and "token" in message["detail"], message
+
+        made = client.post("/api/meetings", json={"title": "Operator"}, headers={"X-WSW-Token": token})
+        assert made.status_code == 200, made.text
+        assert client.post("/api/auth", json={"token": "wrong"}).status_code == 401
+        assert client.post("/api/auth", json={"token": token}).json() == {"required": True, "operator": True}
+        # From here the cookie rides along on every request and on the socket, as it does for the web UI.
+        assert client.get("/api/auth").json()["operator"] is True
+        assert client.post(f"/api/meetings/{made.json()['id']}/end").json()["status"] == "ended"
+        assert client.delete(f"/api/meetings/{demo['id']}").json() == {"deleted": True}
+        with client.websocket_connect("/ws/meetings/m_ffffffffff/audio") as ws:
+            assert "not found" in ws.receive_json()["detail"]
+
+
+def test_interrupted_upload_is_ended_at_startup(tmp_path: Path) -> None:
+    _skip_without_falkordb()
+    graph = "wsw_test_api_" + uuid.uuid4().hex[:8]
+    store = GraphStore(FALKOR_URL, graph)
+    try:
+        now = int(time.time() * 1000)
+        store.create_meeting("m_0123456789", "Cut short", "upload", now)
+        store.write_utterances(
+            [Utterance("m_0123456789", 0, "S1", 0.5, 4.0, "The pricing page ships on Friday.")], None
+        )
+        store.create_meeting("m_9876543210", "Paused", "mic", now)
+        with running_app(tmp_path, graph) as (client, _graph):
+            upload = client.get("/api/meetings/m_0123456789").json()["meeting"]
+            assert upload["status"] == "ended" and upload["duration_s"] >= 4.0, upload
+            # a microphone meeting can still reconnect after a restart: it stays live
+            assert client.get("/api/meetings/m_9876543210").json()["meeting"]["status"] == "live"
+    finally:
+        store.reset()
+        store.close()
+
+
+# ---------------------------------------------------------------------------
+# live capture bookkeeping (a stand-in listener, no models, no database)
+# ---------------------------------------------------------------------------
+
+
+class _FakeListener:
+    """Stands in for LiveSession. close() lets the worker run `flush_s` more seconds and, like the real
+    one, raises TimeoutError when that is longer than the timeout (the worker keeps going)."""
+
+    made: list[_FakeListener]
+    flush_s = 0.0
+
+    def __init__(self, meeting_id: str, asr: Any, embedder: Any, callbacks: Any, **options: Any) -> None:
+        self.meeting_id = meeting_id
+        self.options = options
+        self.closed = False
+        self.lag_s = 0.0
+        self._stopped = threading.Event()
+        self.others_running = [s for s in self.made if s.running]
+        self.made.append(self)
+
+    @property
+    def running(self) -> bool:
+        return not self._stopped.is_set()
+
+    def feed(self, samples: np.ndarray) -> None:
+        assert not self.closed
+
+    def close(self, timeout: float | None = 60.0) -> None:
+        if not self.closed:
+            self.closed = True
+            threading.Timer(self.flush_s, self._stopped.set).start()
+        if not self._stopped.wait(timeout):
+            raise TimeoutError(f"listener for meeting {self.meeting_id} still processing")
+
+
+class _FakeServices:
+    """What CaptureRegistry uses of Services, for a live mic meeting that started just now."""
+
+    def __init__(self, tmp: Path, *, models_s: float = 0.0) -> None:
+        self.tmp = tmp
+        self.models_s = models_s
+        self.started_at = int(time.time() * 1000)
+        self.settings = SimpleNamespace(speaker_threshold=0.55, max_utterance_s=8.0)
+        self.pipeline = SimpleNamespace(
+            flush=lambda: True, next_seq=lambda mid: 0, callbacks=lambda mid, time_offset_s=0.0: None
+        )
+        self.store = SimpleNamespace(set_meeting_has_audio=lambda mid, flag: None)
+
+    def require_graph(self) -> None:
+        pass
+
+    def meeting_summary(self, meeting_id: str) -> dict[str, Any]:
+        return {"id": meeting_id, "status": "live", "source": "mic", "started_at": self.started_at}
+
+    def recording_path(self, meeting_id: str) -> Path:
+        return self.tmp / f"{meeting_id}.wav"
+
+    def speaker_state_path(self, meeting_id: str) -> Path:
+        return self.tmp / f"{meeting_id}.speakers.json"
+
+    def listener_models(self) -> tuple[None, None]:
+        time.sleep(self.models_s)
+        return None, None
+
+    def spawn(self, coro: Any) -> asyncio.Future[Any]:
+        return asyncio.ensure_future(coro)
+
+
+@pytest.fixture
+def fake_listener(monkeypatch: pytest.MonkeyPatch) -> type[_FakeListener]:
+    listener = type("FakeListener", (_FakeListener,), {"made": [], "flush_s": 0.0})
+    monkeypatch.setattr("wsw_brain.api.capture.LiveSession", listener)
+    return listener
+
+
+async def test_concurrent_releases_share_the_listener_flush(
+    tmp_path: Path, fake_listener: type[_FakeListener]
+) -> None:
+    fake_listener.flush_s = 0.5
+    registry = CaptureRegistry(_FakeServices(tmp_path), disconnect_grace_s=30.0)  # type: ignore[arg-type]
+    capture = await registry.attach("m_0000000001")
+    capture.feed(b"\x00\x00" * SAMPLE_RATE)  # 1 s
+    first, second = await asyncio.gather(registry.release("m_0000000001"), registry.release("m_0000000001"))
+    assert first == second == pytest.approx(1.0, abs=0.01)  # the second end/delete waited for the same flush
+    assert all(s.closed and not s.running for s in fake_listener.made)
+
+
+async def test_end_while_a_socket_attaches_closes_its_listener(
+    tmp_path: Path, fake_listener: type[_FakeListener]
+) -> None:
+    registry = CaptureRegistry(_FakeServices(tmp_path, models_s=0.5), disconnect_grace_s=30.0)  # type: ignore[arg-type]
+    attaching = asyncio.ensure_future(registry.attach("m_0000000002"))
+    await asyncio.sleep(0.2)  # attach() is loading the listener models
+    await registry.release("m_0000000002")
+    with pytest.raises(CaptureClosed):
+        await attaching
+    assert fake_listener.made and all(s.closed for s in fake_listener.made)  # nothing left running
+    with pytest.raises(CaptureError) as refused:
+        await registry.attach("m_0000000002")
+    assert refused.value.code == 4409
+
+
+async def test_resume_waits_for_the_old_listener_and_keeps_its_speakers(
+    tmp_path: Path, fake_listener: type[_FakeListener], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("wsw_brain.api.capture.CLOSE_TIMEOUT_S", 0.05)
+    fake_listener.flush_s = 0.5  # the old listener keeps emitting after close() times out
+    services = _FakeServices(tmp_path)
+    registry = CaptureRegistry(services, disconnect_grace_s=30.0)  # type: ignore[arg-type]
+    first = await registry.attach("m_0000000003")
+    old = first.session
+    registry.detach(first, end=False)  # paused: the meeting stays live
+    again = await registry.attach("m_0000000003")
+    new = again.session
+    assert again is first and isinstance(old, _FakeListener) and isinstance(new, _FakeListener)
+    assert new is not old and not old.running
+    assert new.others_running == []  # never two listeners (two seq counters) for one meeting at once
+    # both continue the meeting's speaker tracks, which the old one saved when it finished
+    state = services.speaker_state_path("m_0000000003")
+    assert old.options["speaker_state_path"] == new.options["speaker_state_path"] == state
+    await registry.release("m_0000000003")
 
 
 # ---------------------------------------------------------------------------

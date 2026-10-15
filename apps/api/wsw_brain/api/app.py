@@ -11,6 +11,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -19,6 +20,7 @@ from ..brand import REPO_ROOT, brand
 from ..config import settings
 from ..graph import GraphError, GraphUnavailable
 from . import ask, rest, stream
+from .access import Access, AccessSettings
 from .services import DISCONNECT_GRACE_S, Services
 
 log = logging.getLogger(__name__)
@@ -30,7 +32,7 @@ _API_PREFIXES = ("api", "ws")
 def create_app(
     *, disconnect_grace_s: float = DISCONNECT_GRACE_S, web_dist: Path | None = WEB_DIST
 ) -> FastAPI:
-    """Build the app. Settings are read now (CORS) and in the lifespan (everything else)."""
+    """Build the app. Settings are read now (CORS, access) and in the lifespan (everything else)."""
     _configure_logging()
 
     @asynccontextmanager
@@ -50,13 +52,14 @@ def create_app(
         openapi_url="/api/openapi.json",
         redoc_url=None,
     )
-    origins = [o.strip() for o in settings().cors_origins.split(",") if o.strip()]
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=origins or ["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    origins = _cors_origins()
+    if origins:
+        app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["*"], allow_headers=["*"])
+    access_cfg = AccessSettings()
+    hosts = [h.strip() for h in access_cfg.allowed_hosts.split(",") if h.strip()]
+    if hosts:  # stops DNS rebinding of a server on 127.0.0.1
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
+    app.state.access = Access(access_cfg, origins)
     _add_error_handlers(app)
     app.include_router(rest.router)
     app.include_router(ask.router)
@@ -64,6 +67,17 @@ def create_app(
     if web_dist is not None and (web_dist / "index.html").is_file():
         _mount_web(app, web_dist)
     return app
+
+
+def _cors_origins() -> list[str]:
+    """Other sites allowed to call the API from a browser. The UI is served by this app (or proxied by the
+    Vite dev server), so it needs none: only origins named in WSW_CORS_ORIGINS are allowed, and the settings
+    default "*" applies only when it is set explicitly (a wildcard lets any page a visitor opens read the
+    transcripts of a server on their machine)."""
+    cfg = settings()
+    if "cors_origins" not in cfg.model_fields_set:
+        return []
+    return [o.strip() for o in cfg.cors_origins.split(",") if o.strip()]
 
 
 def _add_error_handlers(app: FastAPI) -> None:

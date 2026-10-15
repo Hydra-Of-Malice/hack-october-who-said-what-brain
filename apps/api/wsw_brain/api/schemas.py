@@ -38,6 +38,10 @@ class SetActionStatus(BaseModel):
     status: Literal["open", "done"]
 
 
+class SignIn(BaseModel):
+    token: str = Field(min_length=1, max_length=512)
+
+
 class AskRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     question: str = Field(min_length=1, max_length=2000)

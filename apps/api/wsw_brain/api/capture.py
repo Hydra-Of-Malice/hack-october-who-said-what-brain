@@ -2,7 +2,9 @@
 
 The recording outlives a socket. A client that stops with {"end": false} (or drops) and reconnects keeps
 appending to the same WAV, and the gap is filled with silence so the recording, the utterance times and
-the UI's wall-clock playhead all share the meeting's timeline (time 0 = meeting.started_at).
+the UI's wall-clock playhead all share the meeting's timeline (time 0 = meeting.started_at). The speaker
+tracks outlive a socket too (Services.speaker_state_path), so a voice keeps its track (S1, S2, ...) across
+a pause, a reconnect or a server restart.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ import numpy as np
 import soundfile as sf
 
 from ..contracts import SAMPLE_RATE
-from ..listen import LiveSession, WavAppender, pcm16_to_float
+from ..listen import ListenerOverloaded, LiveSession, WavAppender, pcm16_to_float
 
 if TYPE_CHECKING:
     from .services import Services
@@ -52,6 +54,7 @@ class Capture:
         self.attached = False
         self.released = False
         self.end_timer: asyncio.TimerHandle | None = None
+        self.attaching: asyncio.Future[None] | None = None  # done once the latest attach() has finished
         self._close_task: asyncio.Future[None] | None = None
 
     @property
@@ -66,8 +69,11 @@ class Capture:
         samples = pcm16_to_float(data)
         if samples.size == 0:
             return
+        try:
+            session.feed(samples)
+        except ListenerOverloaded as exc:  # the listener is too far behind real time to keep up
+            raise CaptureError(f"{exc}; the listener is overloaded, reconnect in a moment", 1013) from exc
         self.recorder.append(samples)
-        session.feed(samples)
 
     def start_session(self, session: LiveSession) -> None:
         self.session = session
@@ -82,6 +88,15 @@ class Capture:
             self._close_task = asyncio.ensure_future(asyncio.to_thread(_close_listener, session))
         await asyncio.shield(self._close_task)
 
+    async def wait_session_stopped(self) -> None:
+        """Wait until the current session's worker has stopped. close() gives up after CLOSE_TIMEOUT_S but the
+        worker keeps emitting utterances; a new session must not start before that (it would reuse their
+        seqs, and miss the speaker tracks the old one saves when it finishes)."""
+        session = self.session
+        if session is not None and session.running:
+            log.info("meeting %s: waiting for the previous listener to finish its backlog", self.meeting_id)
+            await asyncio.to_thread(session.close, None)
+
     def cancel_end_timer(self) -> None:
         if self.end_timer is not None:
             self.end_timer.cancel()
@@ -93,6 +108,8 @@ class CaptureRegistry:
         self.services = services
         self.disconnect_grace_s = disconnect_grace_s
         self._captures: dict[str, Capture] = {}
+        self._releasing: dict[str, asyncio.Future[float]] = {}  # meeting id -> the release in progress
+        self._ended: set[str] = set()  # released for good (ended or deleted): no socket may attach again
         self._lock = asyncio.Lock()
 
     def is_capturing(self, meeting_id: str) -> bool:
@@ -114,6 +131,10 @@ class CaptureRegistry:
                 f"meeting {meeting_id} is a {meeting['source']} meeting and takes no live audio", 4409
             )
         async with self._lock:
+            if meeting_id in self._ended:  # ended or deleted since the status was read
+                raise CaptureError(
+                    f"meeting {meeting_id} has ended; start a new meeting to record again", 4409
+                )
             capture = self._captures.get(meeting_id)
             if capture is not None and capture.attached:
                 raise CaptureError("this meeting is already being captured from another tab or device", 4409)
@@ -123,8 +144,12 @@ class CaptureRegistry:
                 self._captures[meeting_id] = capture
             capture.attached = True
             capture.cancel_end_timer()
+            attaching = capture.attaching = asyncio.get_running_loop().create_future()
         try:
             await capture.close_session()  # the previous socket's session may still be flushing
+            await capture.wait_session_stopped()
+            if capture.released:
+                raise CaptureClosed(meeting_id)
             elapsed = connected_at - meeting["started_at"] / 1000.0
             await asyncio.to_thread(_fill_gap, capture.recorder, elapsed)
             offset = capture.recorder.duration_s
@@ -142,8 +167,13 @@ class CaptureRegistry:
                     threshold=cfg.speaker_threshold,
                     max_utterance_s=cfg.max_utterance_s,
                     start_seq=start_seq,
+                    # the speaker tracks continue from the earlier sessions (and a server restart)
+                    speaker_state_path=services.speaker_state_path(meeting_id),
                 )
             )
+            if capture.released:  # ended or deleted while the listener was starting: nobody else closes it
+                await asyncio.to_thread(_close_listener, session)
+                raise CaptureClosed(meeting_id)
             capture.start_session(session)
             await asyncio.to_thread(services.store.set_meeting_has_audio, meeting_id, True)
         except CaptureError:
@@ -152,6 +182,8 @@ class CaptureRegistry:
         except Exception as exc:
             capture.attached = False
             raise CaptureError(f"could not start the listener: {type(exc).__name__}: {exc}") from exc
+        finally:
+            attaching.set_result(None)
         log.info("meeting %s: capture started at %.1f s, seq %d", meeting_id, offset, start_seq)
         return capture
 
@@ -178,20 +210,33 @@ class CaptureRegistry:
 
     async def release(self, meeting_id: str) -> float | None:
         """Stop capturing for good (meeting ended or deleted): flush the session and close the recording.
+        Concurrent callers (an end and a delete, two tabs, the disconnect timer) all wait for the same flush.
         Returns the recording's duration in seconds, or None if nothing was captured in this process."""
         async with self._lock:
+            self._ended.add(meeting_id)
             capture = self._captures.pop(meeting_id, None)
-        if capture is None:
+            if capture is not None:
+                capture.released = True
+                capture.cancel_end_timer()
+                self._releasing[meeting_id] = asyncio.ensure_future(self._finish_release(capture))
+            releasing = self._releasing.get(meeting_id)
+        if releasing is None:
             return None
-        capture.released = True
-        capture.cancel_end_timer()
-        await capture.close_session()
-        await asyncio.to_thread(capture.recorder.close)
-        return capture.recorder.duration_s
+        return await asyncio.shield(releasing)
+
+    async def _finish_release(self, capture: Capture) -> float:
+        try:
+            if capture.attaching is not None:
+                await capture.attaching  # a socket attaching right now sees `released` and stops its listener
+            await capture.close_session()
+            await asyncio.to_thread(capture.recorder.close)
+            return capture.recorder.duration_s
+        finally:
+            self._releasing.pop(capture.meeting_id, None)
 
     async def shutdown(self) -> None:
         """Server stopping: flush every session and close recordings; meetings stay live."""
-        for meeting_id in list(self._captures):
+        for meeting_id in [*self._captures, *self._releasing]:
             try:
                 await self.release(meeting_id)
             except Exception:

@@ -14,6 +14,9 @@ from ..contracts import Embedder
 log = logging.getLogger(__name__)
 
 RRF_K = 60
+SPACE_CHECK_TTL_S = 600.0  # how long a meeting's "vectors match this embedder" verdict is trusted
+SPACE_CHECKS_PER_QUERY = 2
+SELF_MATCH_MIN = 0.95  # an utterance re-embedded now must find its stored vector at least this close
 _RECENT = re.compile(
     r"\b(just now|right now|latest|most recent(?:ly)?|recently|last (?:few|couple of) minutes|last minute|"
     r"so far|a moment ago|minutes? ago|just said|just mentioned|earlier today)\b",
@@ -68,6 +71,7 @@ class Retriever:
         self.embedder = embedder
         self.names_ttl_s = names_ttl_s
         self._names: dict[str | None, tuple[float, list[str]]] = {}
+        self._space: dict[str, tuple[float, bool]] = {}  # meeting id -> (checked at, same embedding space)
 
     def retrieve(
         self, question: str, meeting_id: str | None = None, k: int = 8
@@ -88,6 +92,7 @@ class Retriever:
                 meeting_id=meeting_id,
             ),
         ]
+        lists[1] = self.same_space_hits(lists[1])
         for name in self.mentioned_speakers(question, meeting_id):
             lists.append(
                 self._call(cypher, self.store.utterances_by_speaker, name, meeting_id=meeting_id, limit=pool)
@@ -96,6 +101,48 @@ class Retriever:
             recent = self._call(cypher, self.store.recent_utterances, meeting_id=meeting_id, limit=k)
             lists.append(list(reversed(recent)) if _oldest_first(recent) else recent)
         return rrf_fuse(lists, k), cypher
+
+    def same_space_hits(self, hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Vector hits minus those from meetings whose stored vectors came from another embedder (the
+        hashing fallback over a graph EmbeddingGemma filled, or the reverse): their similarities are noise
+        that RRF would weigh like real matches. A meeting passes when one of its utterances, embedded again
+        now, finds its own stored vector; verdicts are cached for SPACE_CHECK_TTL_S."""
+        now = time.monotonic()
+        checks = 0
+        kept: list[dict[str, Any]] = []
+        for hit in hits:
+            meeting = str(hit.get("meeting_id") or "")
+            verdict = self._space.get(meeting)
+            if verdict is None or now - verdict[0] > SPACE_CHECK_TTL_S:
+                same = self._self_match(hit) if checks < SPACE_CHECKS_PER_QUERY else None
+                checks += 1
+                if same is None:  # not checked or inconclusive: keep the hit
+                    kept.append(hit)
+                    continue
+                verdict = self._space[meeting] = (now, same)
+                if not same:
+                    log.warning(
+                        "meeting %s has vectors from another embedder than %s; skipping its vector hits",
+                        meeting,
+                        getattr(self.embedder, "name", "this one"),
+                    )
+            if verdict[1]:
+                kept.append(hit)
+        return kept
+
+    def _self_match(self, hit: dict[str, Any]) -> bool | None:
+        uid, text = hit.get("utterance_id"), str(hit.get("text") or "")
+        if not uid or len(text.split()) < 3:
+            return None
+        try:
+            vector = self.embedder.embed_documents([text])[0]
+            found = self.store.search_vector(vector, k=5, meeting_id=hit.get("meeting_id")) or []
+        except Exception as exc:  # noqa: BLE001 - no verdict; the hit is kept
+            log.debug("embedding-space check failed: %s", exc)
+            return None
+        return any(
+            h.get("utterance_id") == uid and float(h.get("score") or 0.0) >= SELF_MATCH_MIN for h in found
+        )
 
     def mentioned_speakers(self, question: str, meeting_id: str | None = None) -> list[str]:
         """Known person/speaker names (or labels like "Speaker 2") that the question mentions."""

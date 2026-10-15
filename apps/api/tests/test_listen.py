@@ -10,6 +10,7 @@ Whisper-backed tests need faster-whisper-small in the HF cache; set WSW_SKIP_SLO
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import json
 import os
@@ -28,15 +29,19 @@ from wsw_brain.brand import REPO_ROOT
 from wsw_brain.config import settings
 from wsw_brain.contracts import SAMPLE_RATE, ListenerCallbacks, Utterance
 from wsw_brain.listen import (
+    AudioTooLong,
+    ListenerOverloaded,
     LiveSession,
     OnlineClusterer,
     WavAppender,
     decode_file,
     float_to_pcm16,
+    iter_decode,
     pcm16_to_float,
     process_file,
     write_wav,
 )
+from wsw_brain.listen import audio as audio_module
 from wsw_brain.listen.asr import WhisperASR
 from wsw_brain.listen.session import _is_garbage
 from wsw_brain.listen.speakers import SherpaSpeakerEmbedder, speaker_change_points
@@ -274,6 +279,41 @@ def test_decode_file_errors(tmp_path: Path) -> None:
         decode_file(bad)
 
 
+def test_iter_decode_streams_blocks(fixture_audio: np.ndarray) -> None:
+    blocks = list(iter_decode(FIXTURE_WAV, block_s=5.0))
+    assert len(blocks) == int(np.ceil(fixture_audio.size / (5 * SAMPLE_RATE)))
+    assert all(b.size == 5 * SAMPLE_RATE for b in blocks[:-1]) and 0 < blocks[-1].size <= 5 * SAMPLE_RATE
+    assert np.array_equal(np.concatenate(blocks), fixture_audio)
+
+
+def test_decode_refuses_audio_past_max_duration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, titanet: SherpaSpeakerEmbedder
+) -> None:
+    """A tiny silent FLAC can declare hours of audio; nothing past the cap is decoded or recorded."""
+    path = tmp_path / "long.flac"
+    sf.write(path, np.zeros(30 * 8000, dtype=np.float32), 8000, format="FLAC")  # 30 s, a few KB
+    assert decode_file(path, max_duration_s=31).size == 30 * SAMPLE_RATE
+    with pytest.raises(AudioTooLong, match="limit is 0:00:10"):  # the declared duration, before decoding
+        decode_file(path, max_duration_s=10)
+    monkeypatch.setattr(audio_module, "_pyav_duration_s", lambda *a: None)  # no (or a lying) header
+    with pytest.raises(AudioTooLong, match="longer than the 0:00:10 limit"):
+        decode_file(path, max_duration_s=10)
+    rec = tmp_path / "rec.wav"
+    with pytest.raises(AudioTooLong):
+        process_file(
+            path,
+            "m_long",
+            StubASR(),
+            titanet,
+            Collector().callbacks(),
+            threshold=THRESHOLD,
+            max_utterance_s=12.0,
+            recording_path=rec,
+            max_duration_s=5,
+        )
+    assert not rec.exists()  # refused on the first block, before the listener opened a recording
+
+
 def test_wav_appender_is_valid_while_growing(tmp_path: Path) -> None:
     path = tmp_path / "rec" / "meeting.wav"
     rec = WavAppender(path)
@@ -357,6 +397,51 @@ def test_clusterer_caps_speakers_and_chooses_between_neighbours() -> None:
         c.assign(np.zeros(8, dtype=np.float32), 1.0)
     with pytest.raises(ValueError):
         OnlineClusterer(1.5)
+
+
+def test_clusterer_needs_more_than_a_borderline_interjection_to_open_a_track() -> None:
+    c = OnlineClusterer(0.5)  # short_s 0.8, confirm_s 2.0, open_margin 0.15
+    c.assign(_vec(1, 0), 3.0)
+    c.assign(_vec(0, 1), 3.0)
+    borderline = _vec(0, 0.45, 0, np.sqrt(1 - 0.45**2))  # cos 0.45 to S2: just below the threshold
+    assert c.tentative(0.45, 1.0) and not c.tentative(0.45, 2.5) and not c.tentative(0.2, 1.0)
+    assert c.assign(borderline, 1.0) == ("S2", OnlineClusterer.INHERIT_CONFIDENCE)  # a 1 s "Sure."
+    assert c.tracks == ["S1", "S2"]
+    assert c.assign(_vec(0, 0, 1), 1.0)[0] == "S3"  # a clearly different voice still opens a track
+    assert c.assign(borderline, 2.5)[0] == "S4"  # and so does a borderline one with enough speech
+    legacy = OnlineClusterer(0.5, confirm_s=0.0)
+    legacy.assign(_vec(1, 0), 3.0)
+    legacy.assign(_vec(0, 1), 3.0)
+    assert legacy.assign(borderline, 1.0)[0] == "S3"  # what used to happen
+
+
+def test_clusterer_state_carries_tracks_to_a_later_session() -> None:
+    first = OnlineClusterer(0.5, merge_threshold=0.3)
+    first.assign(_vec(1, 0), 3.0)  # S1
+    first.assign(_vec(0, 1), 3.0)  # S2
+    first.assign(_vec(0, 0, 1), 3.0)  # S3 ...
+    first.assign(_vec(0, 0.6, 0.8), 3.0)  # ... drifts towards S2 and is merged into it
+    assert first.merge_close() == [("S3", "S2")]
+    state = json.loads(json.dumps(first.state()))
+    assert set(state["tracks"]) == {"S1", "S2"} and state["next"] == 4
+
+    resumed = OnlineClusterer(0.5)
+    resumed.restore(state)
+    assert resumed.tracks == ["S1", "S2"] and resumed.previous is None
+    assert resumed.assign(_vec(0.1, 1), 2.0)[0] == "S2"  # the voice that was S2 keeps its track
+    assert resumed.assign(_vec(0, 0, 0, 1), 2.0)[0] == "S4"  # a new voice never reuses S1..S3
+    np.testing.assert_allclose(resumed.centroids()["S1"], first.centroids()["S1"], atol=1e-5)
+
+    renumbered = OnlineClusterer(0.5)
+    renumbered.restore(state, centroids=False)  # another speaker model: only the numbering carries over
+    assert renumbered.tracks == [] and renumbered.assign(_vec(1, 0), 2.0)[0] == "S4"
+    with pytest.raises(RuntimeError):
+        renumbered.restore(state)
+    for bad in ({"tracks": {"X1": {"total": [1.0], "weight": 1.0}}}, {"tracks": {"S1": {"weight": 1.0}}}):
+        fresh = OnlineClusterer(0.5)
+        with pytest.raises(ValueError):
+            fresh.restore(bad)
+        assert fresh.assign(_vec(1, 0), 2.0)[0] == "S1"  # a failed restore leaves the clusterer untouched
 
 
 def test_garbage_filter() -> None:
@@ -502,6 +587,158 @@ def test_session_rejects_bad_config(titanet: SherpaSpeakerEmbedder, tmp_path: Pa
         LiveSession("m", StubASR(), titanet, Collector().callbacks(), threshold=0.45, max_utterance_s=0.1)
 
 
+def _shifted(turns: list[dict[str, Any]], start_s: float) -> list[dict[str, Any]]:
+    return [{**t, "t_start": t["t_start"] - start_s, "t_end": t["t_end"] - start_s} for t in turns]
+
+
+def test_session_resumed_meeting_keeps_speaker_tracks(
+    titanet: SherpaSpeakerEmbedder, fixture_audio: np.ndarray, tmp_path: Path
+) -> None:
+    """A microphone that reconnects starts a new LiveSession for the same meeting. Its first voice must
+    not take track S1 when S1 is somebody else: tracks name the meeting's Speaker nodes."""
+    state = tmp_path / "audio" / "m_test.speakers.json"
+    first = Collector()
+    _run_session(
+        fixture_audio[: int(13.0 * SAMPLE_RATE)], StubASR(), titanet, first, speaker_state_path=state
+    )
+    assert _attribution(first.utterances, TRUTH[:2])["mapping"] == {"S1": "David", "S2": "Zira"}
+    saved = json.loads(state.read_text(encoding="utf-8"))
+    assert set(saved["tracks"]) == {"S1", "S2"} and saved["next"] == 3 and saved["model"] == titanet.name
+
+    start = 19.5  # the session after the reconnect hears Zira first, then David
+    resumed_audio, turns = (
+        fixture_audio[int(start * SAMPLE_RATE) : int(31.0 * SAMPLE_RATE)],
+        _shifted(TRUTH[3:5], start),
+    )
+    fresh = Collector()
+    _run_session(resumed_audio, StubASR(), titanet, fresh)
+    assert _attribution(fresh.utterances, turns)["mapping"] == {"S1": "Zira", "S2": "David"}  # the bug
+    resumed = Collector()
+    session = _run_session(resumed_audio, StubASR(), titanet, resumed, speaker_state_path=state)
+    assert _attribution(resumed.utterances, turns)["mapping"] == {"S1": "David", "S2": "Zira"}
+    assert session.clusterer.tracks == ["S1", "S2"]
+
+    other_model = tmp_path / "other.speakers.json"
+    other_model.write_text(json.dumps({**saved, "model": "sherpa-other"}), encoding="utf-8")
+    renumbered = LiveSession(
+        "m_test",
+        StubASR(),
+        titanet,
+        Collector().callbacks(),
+        threshold=THRESHOLD,
+        max_utterance_s=12.0,
+        speaker_state_path=other_model,
+    )
+    renumbered.close()
+    assert renumbered.speaker_state()["tracks"] == {} and renumbered.speaker_state()["next"] == 3
+    broken = tmp_path / "broken.speakers.json"
+    broken.write_text("{not json", encoding="utf-8")
+    ignored = LiveSession(
+        "m_test",
+        StubASR(),
+        titanet,
+        Collector().callbacks(),
+        threshold=THRESHOLD,
+        max_utterance_s=12.0,
+        speaker_state_path=broken,
+    )
+    ignored.close()
+    assert ignored.speaker_state()["next"] == 1
+
+
+class _BorderlineShortParts:
+    """The real embedder, except that a part between short_s and confirm_s long comes back at cosine
+    `sim` (just below the threshold) to its closest track and orthogonal to all others' directions: the
+    noisy embedding of a brief interjection that used to open a phantom track."""
+
+    def __init__(self, inner: SherpaSpeakerEmbedder, sim: float) -> None:
+        self.inner, self.sim = inner, sim
+        self.name, self.dim = inner.name, inner.dim
+        self.session: LiveSession | None = None
+        self.perturbed = 0
+
+    def embed(self, samples: np.ndarray) -> np.ndarray:
+        vec = self.inner.embed(samples)
+        centroids = self.session.clusterer.centroids() if self.session is not None else {}
+        if not centroids or not 0.8 * SAMPLE_RATE <= samples.size < 2.0 * SAMPLE_RATE:
+            return vec
+        basis = np.stack(list(centroids.values()))
+        closest = basis[int(np.argmax(basis @ vec))]
+        q, _ = np.linalg.qr(basis.T)
+        noise = np.random.default_rng(self.perturbed).normal(size=vec.size).astype(np.float32)
+        noise -= q @ (q.T @ noise)
+        noise /= np.linalg.norm(noise)
+        self.perturbed += 1
+        return (self.sim * closest + np.sqrt(1.0 - self.sim**2) * noise).astype(np.float32)
+
+
+@pytest.mark.parametrize("confirm_s", [2.0, 0.0])
+def test_session_borderline_interjection_does_not_open_a_phantom_track(
+    titanet: SherpaSpeakerEmbedder, fixture_audio: np.ndarray, confirm_s: float
+) -> None:
+    def cut(t0: float, t1: float) -> np.ndarray:
+        return fixture_audio[int(t0 * SAMPLE_RATE) : int(t1 * SAMPLE_RATE)]
+
+    gap = np.random.default_rng(2).normal(0.0, 0.0008, int(0.8 * SAMPLE_RATE)).astype(np.float32)
+    clip_start = 13.0 + gap.size / SAMPLE_RATE
+    # David, Zira, then a 1.2 s piece of Zira (the interjection), then David again
+    audio = np.concatenate([cut(0.0, 13.0), gap, cut(44.0, 45.2), gap, cut(13.28, 19.4)])
+    embedder = _BorderlineShortParts(titanet, sim=THRESHOLD - 0.05)
+    collector = Collector()
+    session = LiveSession(
+        "m_test",
+        StubASR(),
+        embedder,
+        collector.callbacks(),
+        threshold=THRESHOLD,
+        max_utterance_s=12.0,
+        split_turns=False,
+        confirm_s=confirm_s,
+    )
+    embedder.session = session
+    session.feed(audio)
+    session.close(timeout=120)
+    assert embedder.perturbed >= 1
+    clip = [u for u in collector.utterances if u.t_start < clip_start + 1.2 and u.t_end > clip_start]
+    assert clip, collector.utterances
+    if confirm_s == 0.0:  # the old rule: a 1.2 s part just below the threshold opens a track of its own
+        assert "S3" in session.clusterer.tracks and clip[0].speaker == "S3"
+    else:
+        assert session.clusterer.tracks == ["S1", "S2"], collector.utterances
+        assert {u.speaker for u in clip} == {"S2"} and session.metrics()["held"] >= 1  # Zira's track
+
+
+def test_session_feed_refuses_audio_past_max_queued(titanet: SherpaSpeakerEmbedder) -> None:
+    release = threading.Event()
+
+    def on_status(state: str, detail: dict[str, Any]) -> None:
+        release.wait(30)  # the worker's first status call: it takes nothing off the queue until released
+
+    session = LiveSession(
+        "m_flood",
+        StubASR(),
+        titanet,
+        ListenerCallbacks(on_utterance=lambda u: None, on_status=on_status),
+        threshold=THRESHOLD,
+        max_utterance_s=12.0,
+        max_queued_s=5.0,
+    )
+    second = np.zeros(SAMPLE_RATE, dtype=np.float32)
+    for _ in range(5):
+        session.feed(second)
+    with pytest.raises(ListenerOverloaded, match="faster than it can be processed"):
+        session.feed(second)
+    with pytest.raises(ListenerOverloaded):
+        session.feed(np.zeros(10 * SAMPLE_RATE, dtype=np.float32))
+    assert session.queued_s == 5.0 and session.metrics()["audio_s"] == 5.0  # the refused audio was not queued
+    assert not session.wait_queued(1.0, timeout=0.2)
+    release.set()
+    assert session.wait_queued(0.0, timeout=30)
+    session.feed(second)  # room again
+    session.close()
+    assert session.metrics()["audio_s"] == 6.0 and session.lag_s == 0.0
+
+
 def test_process_file_realtime_pace_and_cancel(
     titanet: SherpaSpeakerEmbedder, fixture_audio: np.ndarray, tmp_path: Path
 ) -> None:
@@ -545,6 +782,47 @@ def test_process_file_realtime_pace_and_cancel(
             threshold=THRESHOLD,
             max_utterance_s=12.0,
         )
+
+
+class _SlowASR(StubASR):
+    def transcribe(self, samples: np.ndarray) -> tuple[str, float]:
+        time.sleep(0.05)
+        return super().transcribe(samples)
+
+
+def test_process_file_cancel_mid_run_abandons_the_rest(
+    titanet: SherpaSpeakerEmbedder, fixture_audio: np.ndarray, tmp_path: Path
+) -> None:
+    """Deleting a meeting while its upload is processed: a "fast" file must not already be queued in
+    full, and closing must not transcribe whatever is still queued."""
+    path = tmp_path / "long.wav"
+    write_wav(path, np.tile(fixture_audio, 4))  # ~200 s
+    cancel = threading.Event()
+    collector = Collector()
+    callbacks = collector.callbacks()
+
+    def on_utterance(u: Utterance) -> None:
+        callbacks.on_utterance(u)
+        cancel.set()  # the meeting is deleted as soon as its first utterance appears
+
+    asr = _SlowASR()
+    rec = tmp_path / "rec.wav"
+    utterances = process_file(
+        path,
+        "m_cancel",
+        asr,
+        titanet,
+        dataclasses.replace(callbacks, on_utterance=on_utterance),
+        threshold=THRESHOLD,
+        max_utterance_s=12.0,
+        recording_path=rec,
+        cancel=cancel,
+    )
+    assert utterances and utterances == collector.utterances
+    assert max(u.t_end for u in utterances) < 100.0, [(u.seq, u.t_end) for u in utterances]
+    assert asr.calls < 20  # the full file is ~36 utterances
+    assert sf.info(str(rec)).duration < 100.0  # the recording was finalised where the listener stopped
+    rec.unlink()  # closed: a deleted meeting's files can be removed at once
 
 
 # ---------------------------------------------------------------------------

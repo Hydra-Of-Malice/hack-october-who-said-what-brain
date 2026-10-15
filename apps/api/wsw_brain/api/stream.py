@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from ..events import EventBus
+from .access import Access
 from .capture import Capture, CaptureError
 from .services import Services
 
@@ -85,7 +86,15 @@ def format_event(event: dict[str, Any]) -> str:
 @router.websocket("/ws/meetings/{meeting_id}/audio")
 async def meeting_audio(websocket: WebSocket, meeting_id: str) -> None:
     services: Services = websocket.app.state.services
+    access: Access = websocket.app.state.access
+    if not access.origin_allowed(websocket):  # CORS does not cover WebSockets: refuse other sites' pages
+        log.warning("audio socket for %s refused: origin %s", meeting_id, websocket.headers.get("origin"))
+        await websocket.close(code=1008)  # before accept(): the handshake is answered with HTTP 403
+        return
     await websocket.accept()
+    if access.required and not access.is_operator(websocket):
+        await _fail(websocket, "live capture needs the operator token (WSW_ADMIN_TOKEN)", 4401)
+        return
     try:
         capture = await services.captures.attach(meeting_id)
     except CaptureError as exc:

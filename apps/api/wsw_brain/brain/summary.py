@@ -8,7 +8,7 @@ from typing import Any
 
 from ..contracts import LLM
 from .extract import mmss, speaker_display
-from .llm import LLMError, strip_thoughts
+from .llm import LLMError, llm_priority, strip_thoughts
 
 log = logging.getLogger(__name__)
 
@@ -113,7 +113,8 @@ async def summarize_meeting(llm: LLM | None, meeting_detail: dict[str, Any]) -> 
         },
     ]
     try:
-        result = await llm.chat(messages, temperature=0.2, max_tokens=200)
+        with llm_priority():  # part of finishing a meeting: ahead of queued questions
+            result = await llm.chat(messages, temperature=0.2, max_tokens=200)
     except LLMError as exc:
         log.warning("summary model call failed; using the heuristic summary: %s", exc)
         return heuristic_summary(meeting_detail)

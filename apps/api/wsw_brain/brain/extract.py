@@ -9,7 +9,7 @@ import re
 from typing import Any
 
 from ..contracts import LLM, ActionItemDraft, DecisionDraft, Insights
-from .llm import LLMError, get_extraction_llm
+from .llm import LLMError, get_extraction_llm, llm_priority
 
 log = logging.getLogger(__name__)
 
@@ -63,6 +63,45 @@ def speaker_display(track: str, table: dict[str, dict[str, Any]], name: str | No
         return speaker["label"]
     match = re.fullmatch(r"S(\d+)", track or "")
     return f"Speaker {match.group(1)}" if match else (track or "Unknown")
+
+
+_TRACK_TOKEN = re.compile(r"\bS(\d+)\b")
+_WORDS_AFTER_PERSON = frozenset({
+    "will", "would", "should", "can", "could", "must", "said", "says", "wants", "agreed", "agrees",
+    "proposed", "proposes", "suggested", "suggests", "owns", "promised", "offered", "volunteered", "decided",
+})  # fmt: skip
+_WORDS_BEFORE_PERSON = frozenset({"ask", "asks", "asked", "tell", "tells", "told", "remind", "ping", "cc"})
+
+
+def speaker_tracks_to_names(
+    text: str,
+    table: dict[str, dict[str, Any]],
+    person: str | None = None,
+    spoken: frozenset[str] = frozenset(),
+) -> str:
+    """Replace speaker tracks ("S2") with names where the text uses them for a person: a track of this
+    meeting that nobody said aloud, at the start, before a verb ("S2 will", "S2'll"), after "ask"/"tell",
+    or the record's own owner/proposer (`person`) before "'s". Anything else, such as "AWS S3" or
+    "Galaxy S23", stays as written."""
+
+    def replace(match: re.Match[str]) -> str:
+        track = match.group(0)
+        if track not in table or track in spoken:
+            return track
+        before = re.findall(r"[A-Za-z]+", text[: match.start()])
+        after = re.match(r"(?:['’](\w+)|\s+([A-Za-z]+))?", text[match.end() :])
+        suffix, next_word = (after.group(1), after.group(2)) if after else (None, None)
+        suffix = (suffix or "").lower()
+        as_person = (
+            not before
+            or before[-1].lower() in _WORDS_BEFORE_PERSON
+            or suffix in ("ll", "d")
+            or (suffix == "s" and track == person)
+            or (next_word or "").lower() in _WORDS_AFTER_PERSON
+        )
+        return speaker_display(track, table) if as_person else track
+
+    return _TRACK_TOKEN.sub(replace, text)
 
 
 def format_window(utterances: list[dict[str, Any]], speakers: list[dict[str, Any]]) -> str:
@@ -214,16 +253,26 @@ def insights_from_json(
     earlier = [d.get("text", "") for d in existing_decisions or [] if d.get("text")]
     earlier_norm = {_norm(t) for t in earlier}
 
-    def readable(raw: Any) -> str:
+    # Tokens like "S3" that someone actually said ("move the backups to S3") are words, not speakers.
+    spoken = frozenset(
+        t.upper()
+        for u in utterances
+        for t in re.findall(r"\bS\d+\b", str(u.get("text") or ""), re.IGNORECASE)
+    )
+
+    def readable(raw: Any, person: str | None = None) -> str:
         # The prompt's legend maps tracks to names; models still write "S2 will…" sometimes.
-        return re.sub(r"\bS(\d+)\b", lambda m: speaker_display(m.group(0), table), _text(raw))
+        return speaker_tracks_to_names(_text(raw), table, person, spoken)
 
     decisions: list[DecisionDraft] = []
     for item in _dicts(data.get("decisions")):
-        text, evidence = readable(item.get("text")), window.evidence(item.get("evidence"))
+        evidence = window.evidence(item.get("evidence"))
+        proposer = window.track(item.get("proposed_by")) or (
+            window.track_of_utterance.get(evidence[0]) if evidence else None
+        )
+        text = readable(item.get("text"), proposer)
         if not text or not evidence or _norm(text) in earlier_norm:
             continue
-        proposer = window.track(item.get("proposed_by")) or window.track_of_utterance.get(evidence[0])
         decisions.append(
             DecisionDraft(
                 text=text,
@@ -237,14 +286,15 @@ def insights_from_json(
 
     actions: list[ActionItemDraft] = []
     for item in _dicts(data.get("action_items")):
-        text, evidence = readable(item.get("text")), window.evidence(item.get("evidence"))
+        owner = window.owner(item.get("owner"))
+        text, evidence = readable(item.get("text"), owner), window.evidence(item.get("evidence"))
         if not text or not evidence:
             continue
         actions.append(
             ActionItemDraft(
                 text=text,
                 evidence=evidence,
-                owner=window.owner(item.get("owner")),
+                owner=owner,
                 due=_optional_text(item.get("due")),
             )
         )
@@ -625,9 +675,10 @@ class Extractor:
             {"role": "user", "content": self._prompt(utterances, speakers, existing_decisions)},
         ]
         try:
-            result = await self.llm.chat(
-                messages, json_mode=True, temperature=0.1, max_tokens=self.max_tokens
-            )
+            with llm_priority():  # meeting notes go ahead of queued questions on a shared model
+                result = await self.llm.chat(
+                    messages, json_mode=True, temperature=0.1, max_tokens=self.max_tokens
+                )
         except LLMError as exc:
             log.warning("extraction model call failed for %s: %s", meeting_id, exc)
             return self._heuristic(meeting_id, utterances, speakers, existing_decisions, f"llm error: {exc}")

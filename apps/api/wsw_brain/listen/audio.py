@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import threading
 import wave
+from collections.abc import Generator
 from pathlib import Path
-from typing import Self
+from typing import Any, Self
 
 import numpy as np
 import soundfile as sf
@@ -15,8 +16,31 @@ from ..contracts import SAMPLE_RATE
 _PCM16_SCALE = 32768.0
 
 
-def decode_file(path: str | Path) -> np.ndarray:
+class AudioTooLong(ValueError):
+    """The audio is longer than the caller's `max_duration_s`."""
+
+
+def decode_file(path: str | Path, *, max_duration_s: float | None = None) -> np.ndarray:
     """Decode any container FFmpeg understands (wav/mp3/m4a/webm/ogg/...) to 16 kHz mono float32.
+
+    Holds the whole decoded file in memory (about 230 MB per hour of audio); `iter_decode` streams it.
+    Raises AudioTooLong past `max_duration_s`.
+    """
+    blocks = list(iter_decode(path, max_duration_s=max_duration_s))
+    if not blocks:
+        return np.zeros(0, dtype=np.float32)
+    return blocks[0] if len(blocks) == 1 else np.concatenate(blocks)
+
+
+def iter_decode(
+    path: str | Path, *, max_duration_s: float | None = None, block_s: float = 10.0
+) -> Generator[np.ndarray, None, None]:
+    """Decode like `decode_file`, yielding 16 kHz mono float32 blocks of `block_s` seconds (the last one
+    shorter), so a long file is never held in memory at once.
+
+    Raises FileNotFoundError, ValueError when the file cannot be decoded, and AudioTooLong when the
+    audio runs past `max_duration_s`: checked against the container's declared duration before any audio
+    is decoded, and again while decoding, because that header can be missing or wrong.
 
     Uses PyAV (bundled with faster-whisper) directly: faster_whisper.decode_audio 1.2.1 passes
     `metadata_errors=` to av.open, which PyAV >= 15 rejects. Falls back to soundfile + soxr
@@ -28,24 +52,48 @@ def decode_file(path: str | Path) -> np.ndarray:
     try:
         import av  # noqa: F401
     except ImportError:
-        decoder = _decode_soundfile
+        pieces = _decode_soundfile(p, max_duration_s)
     else:
-        decoder = _decode_pyav
+        pieces = _decode_pyav(p, max_duration_s)
+    limit = None if max_duration_s is None else int(max_duration_s * SAMPLE_RATE)
+    block = max(1, int(block_s * SAMPLE_RATE))
+    buffered: list[np.ndarray] = []
+    size = total = 0
     try:
-        samples = decoder(p)
-    except Exception as exc:  # PyAV and libsndfile raise their own error types
-        raise ValueError(f"could not decode audio file {p.name}: {exc}") from exc
-    return as_mono_float32(samples)
+        while True:
+            try:
+                piece = next(pieces, None)
+            except AudioTooLong:
+                raise
+            except Exception as exc:  # PyAV and libsndfile raise their own error types
+                raise ValueError(f"could not decode audio file {p.name}: {exc}") from exc
+            if piece is None:
+                break
+            piece = as_mono_float32(piece)
+            total += piece.size
+            if limit is not None and total > limit:
+                raise AudioTooLong(f"{p.name} is longer than the {_hours(max_duration_s)} limit")
+            buffered.append(piece)
+            size += piece.size
+            while size >= block:
+                joined = np.concatenate(buffered) if len(buffered) > 1 else buffered[0]
+                yield joined[:block]
+                rest = joined[block:]
+                buffered, size = ([rest] if rest.size else []), rest.size
+        if size:
+            yield np.concatenate(buffered) if len(buffered) > 1 else buffered[0]
+    finally:
+        pieces.close()
 
 
-def _decode_pyav(path: Path) -> np.ndarray:
+def _decode_pyav(path: Path, max_duration_s: float | None) -> Generator[np.ndarray, None, None]:
     import av
 
-    pieces: list[np.ndarray] = []
     with av.open(str(path), mode="r") as container:
         if not container.streams.audio:
             raise ValueError("no audio stream in the file")
         stream = container.streams.audio[0]
+        _check_declared(path, _pyav_duration_s(av, container, stream), max_duration_s)
         # Keep the source channel layout and average channels ourselves: FFmpeg's default stereo->mono
         # matrix adds both channels at -3 dB, which makes correlated audio 1.4x louder (and can clip).
         resampler = av.AudioResampler(format="fltp", rate=SAMPLE_RATE)
@@ -55,11 +103,29 @@ def _decode_pyav(path: Path) -> np.ndarray:
             except av.error.InvalidDataError:
                 continue  # one corrupt packet (common at the end of browser recordings): keep the rest
             for frame in frames:
-                pieces.extend(_mono(out.to_ndarray()) for out in resampler.resample(frame))
-        pieces.extend(_mono(out.to_ndarray()) for out in resampler.resample(None))
-    if not pieces:
-        return np.zeros(0, dtype=np.float32)
-    return np.concatenate(pieces).astype(np.float32, copy=False)
+                for out in resampler.resample(frame):
+                    yield _mono(out.to_ndarray())
+        for out in resampler.resample(None):
+            yield _mono(out.to_ndarray())
+
+
+def _pyav_duration_s(av: Any, container: Any, stream: Any) -> float | None:
+    """The duration the container declares (None when it does not say, e.g. browser webm)."""
+    if stream.duration is not None and stream.time_base:
+        return float(stream.duration * stream.time_base)
+    if container.duration is not None:
+        return float(container.duration) / av.time_base
+    return None
+
+
+def _check_declared(path: Path, duration_s: float | None, max_duration_s: float | None) -> None:
+    if max_duration_s is not None and duration_s is not None and duration_s > max_duration_s:
+        raise AudioTooLong(f"{path.name} is {_hours(duration_s)} long; the limit is {_hours(max_duration_s)}")
+
+
+def _hours(seconds: float | None) -> str:
+    s = int(seconds or 0)
+    return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}"
 
 
 def _mono(planar: np.ndarray) -> np.ndarray:
@@ -67,14 +133,16 @@ def _mono(planar: np.ndarray) -> np.ndarray:
     return planar.mean(axis=0) if planar.ndim == 2 and planar.shape[0] > 1 else planar.reshape(-1)
 
 
-def _decode_soundfile(path: Path) -> np.ndarray:
+def _decode_soundfile(path: Path, max_duration_s: float | None) -> Generator[np.ndarray, None, None]:
     import soxr
 
+    info = sf.info(str(path))
+    _check_declared(path, info.duration, max_duration_s)
     data, rate = sf.read(str(path), dtype="float32", always_2d=True)
     mono = data.mean(axis=1)
     if rate != SAMPLE_RATE:
         mono = soxr.resample(mono, rate, SAMPLE_RATE)
-    return mono.astype(np.float32, copy=False)
+    yield mono.astype(np.float32, copy=False)
 
 
 def as_mono_float32(samples: np.ndarray) -> np.ndarray:

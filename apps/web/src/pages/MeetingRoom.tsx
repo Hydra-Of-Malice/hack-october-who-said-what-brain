@@ -389,23 +389,34 @@ function RoomActions({ live, canCapture, capture, ending, onStart, onEnd }: Room
 }
 
 function RecIndicator({ flowing, elapsed, capture }: { flowing: boolean; elapsed: number; capture: CaptureControl | null }) {
-  if (!flowing) {
-    return (
-      <span className="room-state">
-        <span className="room-idle-dot" aria-hidden="true" />
-        Live, not capturing audio in this tab
-      </span>
-    );
+  // Screen readers hear recording start and stop once; the clock is a timer, which isn't read out on every tick.
+  const [wasFlowing, setWasFlowing] = useState(flowing);
+  const [announcement, setAnnouncement] = useState("");
+  if (flowing !== wasFlowing) {
+    setWasFlowing(flowing);
+    setAnnouncement(flowing ? "Recording started" : "Recording stopped");
   }
   return (
-    <span className="rec" role="status">
-      <span className="live-dot" aria-hidden="true" />
-      <span className="rec-label">REC</span>
-      <span className="tc rec-time" aria-label={`Recording for ${duration(elapsed)}`}>
-        {timecode(elapsed)}
+    <>
+      <span className="visually-hidden" role="status">
+        {announcement}
       </span>
-      {capture && <LevelMeter store={capture.level} />}
-    </span>
+      {flowing ? (
+        <span className="rec">
+          <span className="live-dot" aria-hidden="true" />
+          <span className="rec-label">REC</span>
+          <span className="tc rec-time" role="timer" aria-label={`Recording for ${duration(elapsed)}`}>
+            {timecode(elapsed)}
+          </span>
+          {capture && <LevelMeter store={capture.level} />}
+        </span>
+      ) : (
+        <span className="room-state">
+          <span className="room-idle-dot" aria-hidden="true" />
+          Live, not capturing audio in this tab
+        </span>
+      )}
+    </>
   );
 }
 

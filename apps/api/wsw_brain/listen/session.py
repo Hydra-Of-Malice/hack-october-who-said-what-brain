@@ -4,21 +4,28 @@ feed() only enqueues. One worker thread per session takes whatever audio is queu
 
 1. runs Silero VAD over it (finished speech segments come out);
 2. splits a segment where the voice changes inside it (back-to-back speakers, no pause for the VAD);
-3. embeds each part and assigns a speaker track with the online clusterer. A short part that matches
-   nobody well is held until the next attributed part arrives, then joins whichever neighbour (the
-   speaker before or after it) it sounds closer to; it is released after `hold_s` of stream time;
+3. embeds each part and assigns a speaker track with the online clusterer. A part that matches nobody
+   well but is too short to open a new track on its own (OnlineClusterer.tentative) is held until the
+   next attributed part arrives, then joins whichever neighbour (the speaker before or after it) it
+   sounds closer to; it is released after `hold_s` of stream time;
 4. transcribes and emits. Consecutive parts of one speaker that are already waiting together (the
    worker fell behind, or a file is fed faster than real time) share one ASR call: Whisper's cost is
    per call (a fixed 30 s encoder window), not per second of speech.
 
 All callbacks run on the worker thread. Errors are reported through on_status("error", ...) and the
-worker keeps going.
+worker keeps going. At most `max_queued_s` of audio may wait for the worker: feed() raises
+ListenerOverloaded beyond that, and a producer that can run ahead of real time calls wait_queued() first.
+
+With `speaker_state_path`, the speaker tracks are saved there and a later session of the same meeting
+(a reconnecting microphone) continues them: a returning voice keeps its track, a new one gets a new number.
 """
 
 from __future__ import annotations
 
 import itertools
+import json
 import logging
+import os
 import queue
 import re
 import threading
@@ -40,8 +47,15 @@ log = logging.getLogger(__name__)
 
 VAD_WINDOW = 512  # samples per Silero window at 16 kHz
 STATUS_EVERY_S = 2.0
+SAVE_SPEAKERS_EVERY_S = 10.0  # centroid updates are saved at most this often (new and merged tracks at once)
 JOIN_SILENCE_S = 0.3  # silence placed between parts that share one ASR call
+CANCEL_POLL_S = 0.1
 _CLOSE = object()
+
+
+class ListenerOverloaded(RuntimeError):
+    """Audio arrives faster than the listener processes it and `max_queued_s` of it is already waiting."""
+
 
 # Phrases Whisper is known to produce on breath, noise or near-silence. They are only dropped when the
 # segment is quiet or the ASR is unsure, so a clearly spoken "Thank you." survives.
@@ -102,11 +116,14 @@ class LiveSession:
         min_speech_s: float = 0.25,
         min_embed_s: float = 0.3,
         short_s: float = 0.8,
+        confirm_s: float = 2.0,
         hold_s: float = 2.0,
         split_turns: bool = True,
         join_gap_s: float = 1.5,
         max_batch_s: float = 15.0,
         min_rms: float = 0.003,
+        max_queued_s: float | None = 300.0,
+        speaker_state_path: str | Path | None = None,
     ) -> None:
         if max_utterance_s <= min_speech_s:
             raise ValueError(f"max_utterance_s must exceed {min_speech_s} s, got {max_utterance_s}")
@@ -114,7 +131,15 @@ class LiveSession:
         self.asr = asr
         self.embedder = embedder
         self.callbacks = callbacks
-        self.clusterer = OnlineClusterer(threshold, max_speakers=max_speakers, short_s=short_s)
+        self.clusterer = OnlineClusterer(
+            threshold, max_speakers=max_speakers, short_s=short_s, confirm_s=confirm_s
+        )
+        self._speaker_state_path = Path(speaker_state_path) if speaker_state_path else None
+        self._saved_tracks: list[str] = []
+        self._speakers_dirty = False
+        self._speakers_saved_at = 0.0
+        if self._speaker_state_path is not None:
+            self._load_speakers(self._speaker_state_path)
         self.min_embed_s = min_embed_s
         self.short_s = short_s
         self.split_turns = split_turns
@@ -135,9 +160,14 @@ class LiveSession:
 
         self._queue: queue.Queue[Any] = queue.Queue()
         self._lock = threading.Lock()
+        self._room = threading.Condition(self._lock)  # notified when the worker takes audio off the queue
+        self._max_queued = None if max_queued_s is None else int(max_queued_s * SAMPLE_RATE)
+        self._queued = 0  # samples fed but not yet taken by the worker
         self._idle = threading.Event()  # set when the worker has handled everything queued so far
         self._idle.set()
         self._closed = False
+        self._aborted = False
+        self._stopped = False  # the worker has exited
         self._seq = start_seq
         self._pending = np.zeros(0, dtype=np.float32)  # tail shorter than one VAD window
         self._backlog: list[_Part] = []  # attributed or held parts not yet transcribed, in time order
@@ -165,7 +195,11 @@ class LiveSession:
     # ---- producer side (any thread) --------------------------------------------------
     def feed(self, samples: np.ndarray) -> None:
         """Queue 16 kHz mono float32 samples; returns immediately. Any length is fine (large arrays
-        are queued as 1 s pieces so the worker keeps streaming results)."""
+        are queued as 1 s pieces so the worker keeps streaming results).
+
+        Raises ListenerOverloaded, queueing nothing, when the samples would take the audio waiting for
+        the worker past `max_queued_s` (a client sending faster than real time, or a worker that cannot
+        keep up)."""
         chunk = np.nan_to_num(
             np.array(as_mono_float32(samples), dtype=np.float32, copy=True), nan=0.0, posinf=1.0, neginf=-1.0
         )
@@ -174,7 +208,14 @@ class LiveSession:
         with self._lock:
             if self._closed:
                 raise RuntimeError(f"listener for meeting {self.meeting_id} is closed")
+            if self._max_queued is not None and self._queued + chunk.size > self._max_queued:
+                raise ListenerOverloaded(
+                    f"listener for meeting {self.meeting_id} already has {self._queued / SAMPLE_RATE:.0f} s "
+                    f"of audio waiting (limit {self._max_queued / SAMPLE_RATE:.0f} s): audio is arriving "
+                    "faster than it can be processed"
+                )
             self._received += chunk.size
+            self._queued += chunk.size
             self._idle.clear()
             for i in range(0, chunk.size, SAMPLE_RATE):
                 self._queue.put(chunk[i : i + SAMPLE_RATE])
@@ -182,21 +223,54 @@ class LiveSession:
     def feed_pcm16(self, data: bytes) -> None:
         self.feed(pcm16_to_float(data))
 
-    def close(self, timeout: float | None = 60.0) -> None:
+    def wait_queued(self, max_s: float, timeout: float | None = None) -> bool:
+        """Block until at most `max_s` seconds of fed audio wait for the worker (or the worker has
+        stopped). A producer that can run ahead of real time (a file) calls this before feed().
+        Returns False on timeout."""
+        limit = int(max_s * SAMPLE_RATE)
+        with self._room:
+            return self._room.wait_for(lambda: self._queued <= limit or self._stopped, timeout)
+
+    def close(self, timeout: float | None = 60.0, *, cancel: threading.Event | None = None) -> None:
         """Flush the VAD, process what is left, stop the worker and finalise the recording.
 
-        Raises TimeoutError if the worker is still busy after `timeout` seconds (it keeps going and
-        finishes in the background)."""
+        If `cancel` is set while waiting, abort() drops whatever is still unprocessed. Raises
+        TimeoutError if the worker is still busy after `timeout` seconds (it keeps going and finishes
+        in the background)."""
         with self._lock:
             if not self._closed:
                 self._closed = True
                 self._queue.put(_CLOSE)
-        self._thread.join(timeout)
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while self._thread.is_alive():
+            if cancel is not None and cancel.is_set() and not self._aborted:
+                self.abort()
+            left = None if deadline is None else deadline - time.monotonic()
+            if left is not None and left <= 0:
+                break
+            step = None if cancel is None or self._aborted else CANCEL_POLL_S
+            self._thread.join(left if step is None else step if left is None else min(step, left))
         if self._thread.is_alive():
             raise TimeoutError(
                 f"listener for meeting {self.meeting_id} still processing after {timeout} s "
                 f"(backlog {self.lag_s:.1f} s of audio)"
             )
+
+    def abort(self) -> None:
+        """Stop without finishing: queued audio is dropped, nothing more is transcribed and no more
+        utterances are delivered. Returns at once; the worker stops after the step it is in (one ASR or
+        embedding call at most) and still finalises the recording. close() waits for it."""
+        with self._lock:
+            self._aborted = True
+            self._closed = True
+            while True:
+                try:
+                    self._queue.get_nowait()
+                except queue.Empty:
+                    break
+            self._queued = 0
+            self._queue.put(_CLOSE)
+            self._room.notify_all()
 
     def wait_idle(self, timeout: float | None = None) -> bool:
         """Block until the worker has handled all audio fed so far (held parts may still be pending).
@@ -228,11 +302,28 @@ class LiveSession:
         return max(0, self._received - self._done) / SAMPLE_RATE
 
     @property
+    def queued_s(self) -> float:
+        """Seconds of fed audio the worker has not picked up yet."""
+        return self._queued / SAMPLE_RATE
+
+    @property
+    def aborted(self) -> bool:
+        return self._aborted
+
+    @property
     def recording_path(self) -> Path | None:
         return self._recording.path if self._recording else None
 
     def speaker_centroids(self) -> dict[str, np.ndarray]:
         return self.clusterer.centroids()
+
+    def speaker_state(self) -> dict[str, Any]:
+        """What `speaker_state_path` holds: the speaker model and the clusterer's tracks."""
+        return {
+            "model": getattr(self.embedder, "name", None),
+            "dim": getattr(self.embedder, "dim", None),
+            **self.clusterer.state(),
+        }
 
     def metrics(self) -> dict[str, Any]:
         done_s = self._done / SAMPLE_RATE
@@ -258,7 +349,7 @@ class LiveSession:
                 self._status("listening")
                 continue
             chunks, closing = self._take_batch(first)
-            if chunks:
+            if chunks and not self._aborted:
                 self._guarded("processing audio", self._process, chunks)
             if closing:
                 self._guarded("flushing the stream", self._finish)
@@ -267,48 +358,62 @@ class LiveSession:
             with self._lock:
                 if self._queue.empty():
                     self._idle.set()
+        with self._lock:
+            self._stopped = True
+            self._room.notify_all()
         self._status("idle", force=True)
 
     def _take_batch(self, first: Any) -> tuple[list[np.ndarray], bool]:
         chunks: list[np.ndarray] = []
-        total, item = 0, first
-        while item is not _CLOSE:
+        total, item, closing = 0, first, False
+        while True:
+            if item is _CLOSE:
+                closing = True
+                break
             chunks.append(item)
             total += item.size
             if total >= self._max_batch:
-                return chunks, False
+                break
             try:
                 item = self._queue.get_nowait()
             except queue.Empty:
-                return chunks, False
-        return chunks, True
+                break
+        with self._lock:
+            self._queued = max(0, self._queued - total)
+            self._room.notify_all()
+        return chunks, closing
 
     def _process(self, chunks: list[np.ndarray]) -> None:
         for chunk in chunks:
+            if self._aborted:
+                return
             if self._recording is not None:
                 self._guarded("recording audio", self._recording.append, chunk)
             self._feed_vad(chunk)
         self._take_segments()
         self._release_held(final=False)
         self._emit(final=False)
+        self._guarded("saving the speaker tracks", self._save_speakers)
 
     def _finish(self) -> None:
         try:
-            if self._pending.size:
-                padded = np.zeros(VAD_WINDOW, dtype=np.float32)
-                padded[: self._pending.size] = self._pending
-                self._vad_fed += self._pending.size
-                self._pending = np.zeros(0, dtype=np.float32)
-                self._vad.accept_waveform(padded)
-            self._vad.flush()
-            self._take_segments()
-            self._release_held(final=True)
-            self._emit(final=True)
+            if not self._aborted:
+                if self._pending.size:
+                    padded = np.zeros(VAD_WINDOW, dtype=np.float32)
+                    padded[: self._pending.size] = self._pending
+                    self._vad_fed += self._pending.size
+                    self._pending = np.zeros(0, dtype=np.float32)
+                    self._vad.accept_waveform(padded)
+                self._vad.flush()
+                self._take_segments()
+                self._release_held(final=True)
+                self._emit(final=True)
         finally:
             self._backlog.clear()
             self._done = self._received
             if self._recording is not None:
                 self._recording.close()
+            self._guarded("saving the speaker tracks", self._save_speakers, True)
 
     def _guarded(self, what: str, fn: Callable[..., Any], *args: Any) -> Any:
         """Run fn(*args); on failure report it and return None (the worker keeps going)."""
@@ -331,7 +436,7 @@ class LiveSession:
         self._update_done()
 
     def _take_segments(self) -> None:
-        while not self._vad.empty():
+        while not self._vad.empty() and not self._aborted:
             segment = self._vad.front
             start, samples = int(segment.start), np.asarray(segment.samples, dtype=np.float32)
             self._vad.pop()
@@ -367,12 +472,12 @@ class LiveSession:
         if part.embedding is None:
             self._counts["held"] += 1
             return
-        if part.duration < self.short_s:
-            best, sim = self.clusterer.best_match(part.embedding)
-            if best is not None and sim < self.clusterer.threshold:
-                self._counts["held"] += 1  # too short to trust on its own: let the neighbours decide
-                return
+        best, sim = self.clusterer.best_match(part.embedding)
+        if best is not None and self.clusterer.tentative(sim, part.duration):
+            self._counts["held"] += 1  # too little evidence for a new voice: let the neighbours decide
+            return
         track, confidence = self.clusterer.assign(part.embedding, part.duration)
+        self._speakers_dirty = True
         self._apply_merges()
         part.speaker, part.confidence = self.clusterer.canonical(track), confidence
         self._resolve_held(next_track=part.speaker)
@@ -409,6 +514,7 @@ class LiveSession:
                 self._decide(part, candidates)
             elif part.embedding is not None:  # nobody has spoken yet: this is the first speaker
                 track, confidence = self.clusterer.assign(part.embedding, part.duration)
+                self._speakers_dirty = True
                 part.speaker, part.confidence = self.clusterer.canonical(track), confidence
             else:
                 self._counts["skipped_unattributed"] += 1
@@ -429,7 +535,7 @@ class LiveSession:
     def _emit(self, *, final: bool) -> None:
         backlog = self._backlog
         i = 0
-        while i < len(backlog) and backlog[i].speaker is not None:
+        while i < len(backlog) and backlog[i].speaker is not None and not self._aborted:
             j = i + 1
             while j < len(backlog) and self._joinable(backlog[i], backlog[j - 1], backlog[j]):
                 j += 1
@@ -437,7 +543,7 @@ class LiveSession:
             if j == len(backlog) and not final and may_grow and not self._queue.empty():
                 break  # more audio is already queued: this speaker's turn may continue
             utterance = self._guarded("transcribing", self._transcribe, backlog[i:j])
-            if utterance is not None:
+            if utterance is not None and not self._aborted:
                 self._guarded("delivering an utterance", self.callbacks.on_utterance, utterance)
             i = j
             self._done = min(self._vad_fed, backlog[i].start) if i < len(backlog) else self._vad_fed
@@ -484,6 +590,49 @@ class LiveSession:
         self._seq += 1
         self._counts["utterances"] += 1
         return utterance
+
+    # ---- speaker tracks across sessions ----------------------------------------------------
+    def _load_speakers(self, path: Path) -> None:
+        if not path.is_file():
+            return
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+            same_model = (state.get("model"), state.get("dim")) == (
+                getattr(self.embedder, "name", None),
+                getattr(self.embedder, "dim", None),
+            )
+            self.clusterer.restore(state, centroids=same_model)
+        except (OSError, ValueError, AttributeError) as exc:
+            log.warning("meeting %s: ignoring unreadable speaker state %s (%s)", self.meeting_id, path, exc)
+            return
+        if not same_model:
+            log.info(
+                "meeting %s: speaker model changed since %s was saved; new voices are numbered after it",
+                self.meeting_id,
+                path.name,
+            )
+        self._saved_tracks = self.clusterer.tracks
+        log.info("meeting %s: continuing speaker tracks %s", self.meeting_id, self._saved_tracks)
+
+    def _save_speakers(self, force: bool = False) -> None:
+        """Write the tracks to speaker_state_path: at once when a track opened or merged, otherwise at
+        most every SAVE_SPEAKERS_EVERY_S (centroid drift), and always at the end of the stream."""
+        path = self._speaker_state_path
+        if path is None or not self._speakers_dirty:
+            return
+        now = time.monotonic()
+        tracks = self.clusterer.tracks
+        if (
+            not force
+            and tracks == self._saved_tracks
+            and now - self._speakers_saved_at < SAVE_SPEAKERS_EVERY_S
+        ):
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(self.speaker_state(), separators=(",", ":")), encoding="utf-8")
+        os.replace(tmp, path)
+        self._saved_tracks, self._speakers_saved_at, self._speakers_dirty = tracks, now, False
 
     # ---- bookkeeping ----------------------------------------------------------------------
     def _update_done(self) -> None:

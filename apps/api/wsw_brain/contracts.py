@@ -12,8 +12,9 @@ Graph dicts returned to the API are plain JSON-serialisable dicts with the keys 
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from typing import Any, Callable, Literal, Protocol
+from typing import Any, Literal, Protocol
 
 import numpy as np
 

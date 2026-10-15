@@ -55,9 +55,11 @@ let generation = 0;
 
 export interface SpeakHandlers {
   onEnd: () => void;
+  /** The audio has started (engines can take a moment after speak()). */
+  onStart?: () => void;
 }
 
-/** Speak `text`, replacing anything already being spoken. onEnd fires once, unless stopSpeaking() runs first. */
+/** Speak `text`, replacing anything already being spoken. onStart and onEnd fire once each, unless stopSpeaking() runs first. */
 export function speak(text: string, handlers: SpeakHandlers): boolean {
   if (!ttsSupported()) return false;
   const synth = window.speechSynthesis;
@@ -79,6 +81,11 @@ export function speak(text: string, handlers: SpeakHandlers): boolean {
       u.lang = v.lang;
     }
     u.rate = 1.03;
+    if (i === 0) {
+      u.onstart = () => {
+        if (!ended && gen === generation) handlers.onStart?.();
+      };
+    }
     if (i === parts.length - 1) u.onend = finish;
     u.onerror = finish;
     synth.speak(u);
