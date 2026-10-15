@@ -30,8 +30,11 @@ SYSTEM_PROMPT = """You extract structured meeting notes from a transcript window
 Rules:
 - A decision is something the group settled on: stated as final ("we'll go with", "agreed", "locked",
   "final") or accepted without objection. A proposal, preference or opinion ("I want", "I'd suggest",
-  "what if") is NOT a decision until someone agrees to it. An action item is a concrete task someone will do.
-- Only set "supersedes" when this window explicitly changes an earlier decision, not when it restates it.
+  "what if") is NOT a decision until someone agrees to it.
+- An action item is a concrete task someone committed to ("I'll…", "I will…") or accepted when asked
+  ("can you…?" "yes"). Wishes and positions ("Meera wants…", "Rahul thinks…") are NOT action items.
+- Only set "supersedes" when this window explicitly changes an earlier decision to something different. A
+  decision that "still holds", "stays" or "remains" the same is a restatement: leave "supersedes" null.
 - Refer to people by name in the text; never write speaker tracks like "S2" inside "text".
 - Write each item as one short sentence in plain words. Owners and proposers use the speaker track (S1, S2...)
   when the person is in the speaker list, otherwise the name as spoken.
@@ -39,6 +42,12 @@ Rules:
 - Evidence ids must be copied exactly from the [brackets] at the start of transcript lines.
 - Only include what the transcript actually says. Empty lists are fine.
 - At most 5 decisions and 8 action items."""
+
+
+# A decision that keeps something as it was is not a change ("The launch date still holds").
+_REAFFIRM = re.compile(r"\b(still|stays|stay|remains?|unchanged|holds|reaffirm\w*|as before|as agreed)\b", re.IGNORECASE)
+# Positions and wishes are not tasks ("Meera wants the starter tier at 3,999").
+_WISH = re.compile(r"\b(wants?|would like|prefers?|thinks?|believes?|feels?)\b", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +287,7 @@ def insights_from_json(
                 text=text,
                 evidence=evidence,
                 proposed_by=proposer,
-                supersedes_text=_match_earlier(item.get("supersedes"), earlier, text),
+                supersedes_text=None if _REAFFIRM.search(text) else _match_earlier(item.get("supersedes"), earlier, text),
             )
         )
         if len(decisions) == MAX_DECISIONS:
@@ -288,7 +297,7 @@ def insights_from_json(
     for item in _dicts(data.get("action_items")):
         owner = window.owner(item.get("owner"))
         text, evidence = readable(item.get("text"), owner), window.evidence(item.get("evidence"))
-        if not text or not evidence:
+        if not text or not evidence or _WISH.search(text):
             continue
         actions.append(
             ActionItemDraft(

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import dataclasses
+import difflib
 import logging
 import queue
 import re
@@ -533,10 +534,14 @@ class _MeetingRecords:
     ) -> bool:
         words = self._words(text, owner)
         fresh = not evidence or any(e in new_ids for e in evidence)
+        due = _due_key(text)
         for record in held:
             overlap = _containment(words, self._words(record["text"], record.get("owner")))
             shared = bool(set(evidence) & set(record.get("evidence") or []))
-            if overlap >= RESTATE or (overlap >= LOOSE_RESTATE and (shared or not fresh)):
+            # Recaps restate a task with the same owner and day in fewer words ("Meera has the Saffron basket
+            # deck by Thursday" after "Meera will send the revised deck to Safran Basket by Thursday").
+            same_due = owner is not None and due is not None and due == _due_key(record["text"])
+            if overlap >= RESTATE or (overlap >= LOOSE_RESTATE and (shared or not fresh or same_due)):
                 return True
         return False
 
@@ -550,8 +555,35 @@ RESTATE = 0.8
 LOOSE_RESTATE = 0.5
 
 
+_DUE = re.compile(
+    r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|tonight|eod|end of (?:day|week)"
+    r"|next week|next month)\b",
+    re.IGNORECASE,
+)
+
+
+def _due_key(text: str) -> str | None:
+    match = _DUE.search(text or "")
+    return match.group(1).lower() if match else None
+
+
 def _containment(a: set[str], b: set[str]) -> float:
-    return len(a & b) / min(len(a), len(b)) if a and b else 0.0
+    """Share of the smaller set's words found in the other, tolerating ASR spelling drift: "safran" matches
+    "saffron" (one edit), and "razor" + "pay" match "razorpay"."""
+    if not a or not b:
+        return 0.0
+    small, large = (a, b) if len(a) <= len(b) else (b, a)
+    hits = sum(1 for w in small if w in large or any(_near(w, v) for v in large) or _split_of(w, small, large))
+    return hits / len(small)
+
+
+def _near(a: str, b: str) -> bool:
+    return min(len(a), len(b)) >= 5 and difflib.SequenceMatcher(None, a, b).ratio() >= 0.75
+
+
+def _split_of(word: str, words: set[str], other: set[str]) -> bool:
+    """`word` is half of a compound the other text writes as one word ("razor" + "pay" vs "razorpay")."""
+    return any(word + w in other or w + word in other for w in words if w != word)
 
 
 def _same_owner(owner: str | None, item: dict[str, Any]) -> bool:
