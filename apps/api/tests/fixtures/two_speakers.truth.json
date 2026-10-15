@@ -1,0 +1,60 @@
+{
+  "sample_rate": 16000,
+  "duration_s": 50.211,
+  "turns": [
+    {
+      "speaker": "David",
+      "text": "Good morning everyone. Let's start with the pricing update for the new analytics dashboard.",
+      "t_start": 0.5,
+      "t_end": 6.049
+    },
+    {
+      "speaker": "Zira",
+      "text": "Sure. The customer survey shows that most teams want a monthly plan instead of a yearly one.",
+      "t_start": 6.649,
+      "t_end": 12.68
+    },
+    {
+      "speaker": "David",
+      "text": "That makes sense. Then we should launch the monthly plan first and keep the yearly plan for later.",
+      "t_start": 13.28,
+      "t_end": 19.167
+    },
+    {
+      "speaker": "Zira",
+      "text": "Agreed. I will update the pricing page and send the draft to marketing by Friday.",
+      "t_start": 19.767,
+      "t_end": 25.004
+    },
+    {
+      "speaker": "David",
+      "text": "Great. What about the mobile app? Is the login bug fixed yet?",
+      "t_start": 25.604,
+      "t_end": 30.562
+    },
+    {
+      "speaker": "Zira",
+      "text": "Not yet. Ravi is working on it, and he expects a fix early next week.",
+      "t_start": 31.162,
+      "t_end": 36.476
+    },
+    {
+      "speaker": "David",
+      "text": "Okay. Then we decide that the launch date moves to the twentieth of November.",
+      "t_start": 37.076,
+      "t_end": 41.901
+    },
+    {
+      "speaker": "Zira",
+      "text": "Sounds good. I will tell the support team about the new launch date today.",
+      "t_start": 42.501,
+      "t_end": 47.123
+    },
+    {
+      "speaker": "David",
+      "text": "Perfect, thanks everyone.",
+      "t_start": 47.723,
+      "t_end": 49.611
+    }
+  ]
+}
